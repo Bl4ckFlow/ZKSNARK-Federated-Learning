@@ -1,0 +1,13 @@
+1,1,0,main.old_params[0]
+2,2,0,main.old_params[1]
+3,3,0,main.old_params[2]
+4,4,0,main.new_params[0]
+5,5,0,main.new_params[1]
+6,6,0,main.new_params[2]
+7,7,0,main.learning_rate
+8,8,0,main.gradient[0]
+9,9,0,main.gradient[1]
+10,10,0,main.gradient[2]
+11,-1,0,main.delta[0]
+12,-1,0,main.delta[1]
+13,-1,0,main.delta[2]
