@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 
 from utils.crypto import sign_update, verify_signature
 from utils.zk_proof import generate_zk_proof, verify_zk_proof
-from nodes.types import UpdateType
+from nodes.fl_types import UpdateType
 from utils.serialization import serialize_model
 
 class UpdateManager:

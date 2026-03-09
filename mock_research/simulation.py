@@ -9,7 +9,7 @@ from typing import Dict
 
 # Import your modules
 from nodes.node import Node
-from nodes.types import UpdateType
+from nodes.fl_types import UpdateType
 from nodes.network_layer import NetworkLayer
 from utils.serialization import serialize_model
 from utils.zk_proof import generate_zk_proof
@@ -33,7 +33,7 @@ class MockNetworkHub:
         if target_node:
             await target_node.on_receive_message(message)
 
-# FIX: Inherit from NetworkLayer
+
 class MockNetworkLayer(NetworkLayer):
     def __init__(self, node_id: str, peers: list, hub: MockNetworkHub):
         self.node_id = node_id
@@ -136,7 +136,7 @@ async def run_simulation():
     await nodes[1].on_receive_update(u2)
     await asyncio.sleep(4.0)
     assert nodes[0].model_height == 2
-    assert nodes[2].model_height == 1
+    assert nodes[2].model_height == 1 
     logger.info("Partial consensus: N1 & N2 are at H=2. N3 is left behind at H=1.")
 
     # TEST 3

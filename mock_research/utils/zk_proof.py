@@ -44,7 +44,7 @@ class ZKSNARK:
         # We calculate grad so it fits perfectly: grad = (old - new) * (SCALE / lr)
         
         if lr_int == 0:
-            print("❌ Learning rate quantized to zero")
+            print("Learning rate quantized to zero")
             return None
             
         # For lr=0.01, scale=1e6 -> lr_int=10,000 -> multiplier=100
@@ -78,7 +78,6 @@ class ZKSNARK:
             try:
                 gen_witness = os.path.join(self.circuit_dir, "update_check_js/generate_witness.js")
                 
-                # Suppress output to keep logs clean
                 subprocess.run(["node", gen_witness, self.wasm_path, input_path, witness_path], check=True, capture_output=True)
                 
                 subprocess.run(["snarkjs", "groth16", "prove", self.zkey_path, witness_path, proof_path, public_path], check=True, capture_output=True)
@@ -89,7 +88,7 @@ class ZKSNARK:
                 return {"proof": proof, "public_signals": public_signals}
                 
             except subprocess.CalledProcessError as e:
-                print(f"❌ ZK Gen Failed: {e.stderr.decode() if e.stderr else str(e)}")
+                print(f"ZK Gen Failed: {e.stderr.decode() if e.stderr else str(e)}")
                 return None
 
     def verify_proof(self, proof_object: Optional[Dict[str, Any]]) -> bool:
@@ -106,6 +105,70 @@ class ZKSNARK:
             except Exception:
                 return False
 
+
+def setup_circuit(circuit_path: str, output_dir: str) -> bool:
+    """
+    Compiles a Circom circuit and generates proving/verification keys.
+
+    Steps:
+        1. circom <circuit_path> --r1cs --wasm --sym -o <output_dir>
+        2. snarkjs groth16 setup <r1cs> powersOfTau.ptau <zkey>   (uses a local Powers-of-Tau file)
+        3. snarkjs zkey export verificationkey <zkey> <vkey>
+
+    Returns True on success, False on any failure.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    circuit_name = os.path.splitext(os.path.basename(circuit_path))[0]
+    r1cs_path  = os.path.join(output_dir, f"{circuit_name}.r1cs")
+    zkey_path  = os.path.join(output_dir, f"{circuit_name}_final.zkey")
+    vkey_path  = os.path.join(output_dir, "verification_key.json")
+
+    # A small Powers-of-Tau ceremony file must exist locally.
+    # Download from: https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_12.ptau
+    ptau_path = os.path.join(output_dir, "pot12_final.ptau")
+    if not os.path.exists(ptau_path):
+        print(f"❌ Powers-of-Tau file not found: {ptau_path}")
+        print("   Download it with:")
+        print("   curl -o circuits/pot12_final.ptau https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_12.ptau")
+        return False
+
+    try:
+        # Step 1: Compile the circuit
+        print("  [1/3] Compiling circuit with circom...")
+        subprocess.run(
+            ["circom", circuit_path, "--r1cs", "--wasm", "--sym", "-o", output_dir],
+            check=True, capture_output=True
+        )
+        print("  ✓ Compilation done")
+
+        # Step 2: Generate proving key
+        print("  [2/3] Generating proving key (groth16 setup)...")
+        subprocess.run(
+            ["snarkjs", "groth16", "setup", r1cs_path, ptau_path, zkey_path],
+            check=True, capture_output=True
+        )
+        print("  ✓ Proving key ready")
+
+        # Step 3: Export verification key
+        print("  [3/3] Exporting verification key...")
+        subprocess.run(
+            ["snarkjs", "zkey", "export", "verificationkey", zkey_path, vkey_path],
+            check=True, capture_output=True
+        )
+        print("  ✓ Verification key ready")
+
+        return True
+
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode() if e.stderr else str(e)
+        print(f"❌ Circuit setup failed:\n{stderr}")
+        return False
+    except FileNotFoundError as e:
+        print(f"❌ Required tool not found: {e}")
+        return False
+
+
 # Singleton Pattern
 _zksnark_instance = None
 def _get_zksnark():
@@ -113,16 +176,25 @@ def _get_zksnark():
     if _zksnark_instance is None: _zksnark_instance = ZKSNARK()
     return _zksnark_instance
 
+
 # Compatible API
 def generate_zk_proof(prev_model_hash, serialized_new_params, prev_model=None, new_model=None, learning_rate=0.01, enable_strict_verification=True):
     if not enable_strict_verification or prev_model is None:
         return f"zkproof_{hashlib.sha256(serialized_new_params).hexdigest()}"
-    return _get_zksnark().generate_proof(prev_model, new_model, learning_rate) # type: ignore
+    return _get_zksnark().generate_proof(prev_model, new_model, learning_rate)  # type: ignore
+
 
 def verify_zk_proof(prev_model_hash, serialized_new_params, proof, prev_model=None, enable_strict_verification=True, **kwargs):
-    if isinstance(proof, str): 
-        # In strict mode, we should ideally reject strings, but for fallback robustness we allow it
-        # You can change this to False if you want to enforce ZK only
-        return True 
-    if isinstance(proof, dict): return _get_zksnark().verify_proof(proof)
+    # FIX 4: In strict mode, string proofs (fallback/unsigned) must be REJECTED.
+    # A malicious node could otherwise bypass ZK verification by sending any plain string.
+    if isinstance(proof, str):
+        if enable_strict_verification:
+            print("[ZK] Strict mode: rejecting string proof — a real zk-SNARK proof dict is required.")
+            return False
+        # Non-strict (PoC) mode: string proofs are acceptable
+        return True
+
+    if isinstance(proof, dict):
+        return _get_zksnark().verify_proof(proof)
+
     return False

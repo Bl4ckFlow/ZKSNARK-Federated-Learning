@@ -7,8 +7,9 @@ from collections import deque, Counter
 from nodes.training_engine import TrainingEngine
 from nodes.update_manager import UpdateManager
 from nodes.network_layer import NetworkLayer
-from nodes.types import UpdateLogEntry, UpdateType, VoteMessage
-from utils.hashing import hash_object
+import hashlib
+from nodes.fl_types import UpdateLogEntry, UpdateType, VoteMessage
+from utils.serialization import serialize_model
 
 
 # ===========================
@@ -29,7 +30,7 @@ class Node:
     def __init__(self, 
                  node_id: str, 
                  peers: List[tuple], 
-                 voting_window: float = 5.0, 
+                 voting_window: float = 60.0, 
                  min_votes: int = 2, 
                  max_seen_updates: int = 10000,
                  enable_strict_zk: bool = False,
@@ -111,7 +112,11 @@ class Node:
         Used for genesis or forced resync.
         """
         self.__local_model = model
-        self.local_model_hash = hash_object(model)
+        self.local_model_hash = hashlib.sha256(serialize_model(model)).hexdigest()
+
+    def get_model(self) -> Optional[dict]:
+        """Returns the current local model."""
+        return self.__local_model
 
     # ===========================
     # ==== NETWORK CALLBACKS ====
@@ -181,27 +186,31 @@ class Node:
         # Add to candidate pool
         self.update_manager.add_candidate(update)
 
-        # Vote for this update if we haven't voted for this height yet
+        # FIX 2: Determine whether to vote outside the lock, then broadcast after releasing it.
+        vote_to_broadcast: Optional[VoteMessage] = None
+
         async with self._vote_lock:
             if update.model_height not in self._voted_heights:
                 self._voted_heights.add(update.model_height)
                 
-                # Create our vote
                 my_vote = VoteMessage(
                     voter_node_id=self.node_id,
                     target_height=update.model_height,
                     voted_update_id=update.update_id
                 )
                 
-                # Record our own vote
                 if update.model_height not in self._votes_by_height:
                     self._votes_by_height[update.model_height] = []
                 self._votes_by_height[update.model_height].append(my_vote)
                 
                 print(f"[Node {self.node_id}] Voting for update {update.update_id[:8]} at H={update.model_height}")
                 
-                # Broadcast our vote to peers
-                await self.network_layer.broadcast_vote(my_vote)
+                # Stage the vote for broadcasting — do NOT await inside the lock
+                vote_to_broadcast = my_vote
+
+        # FIX 2: Broadcast outside the lock to prevent deadlock / blocking other vote recording
+        if vote_to_broadcast is not None:
+            await self.network_layer.broadcast_vote(vote_to_broadcast)
 
         # Start voting window for this height (only once)
         await self._ensure_voting_task(update.model_height)
@@ -251,7 +260,7 @@ class Node:
                 return
             
             async with self._vote_lock:
-                votes = self._votes_by_height.get(target_height, [])
+                votes = list(self._votes_by_height.get(target_height, []))
             
             if not votes:
                 print(f"[Node {self.node_id}] No votes collected for H={target_height}")
@@ -268,15 +277,13 @@ class Node:
             # Case 1: Only one update candidate → accept immediately
             if len(vote_counts) == 1:
                 winning_update_id = list(vote_counts.keys())[0]
-                # FIX 4: Safe subscripting by ensuring it's not None (though VoteMessage guarantees str)
                 if winning_update_id:
                     print(f"[Node {self.node_id}] Single candidate for H={target_height}, accepting update {winning_update_id[:8]}")
                 else:
-                    return # Should not happen if data is valid
+                    return
             
             # Case 2: Multiple candidates 
             elif len(vote_counts) > 1:
-                # most_common returns list of (key, count) tuples
                 winning_update_id, count = vote_counts.most_common(1)[0]
                 
                 if count > total_votes / 2 and count >= self.min_votes:
@@ -297,10 +304,11 @@ class Node:
                 else:
                     print(f"[Node {self.node_id}] Winning update {winning_update_id[:8]} not found in candidate pool")
             
-            # Cleanup votes for this height
+            # FIX 1: Actually delete votes for this height instead of returning early.
+            # FIX 7: Also prune _voted_heights to prevent unbounded growth.
             async with self._vote_lock:
-                if target_height in self._votes_by_height:
-                    del self._votes_by_height[target_height]
+                self._votes_by_height.pop(target_height, None)
+                self._voted_heights.discard(target_height)
                     
         except Exception as e:
             print(f"[Node {self.node_id}] Error in consensus: {e}")
@@ -349,8 +357,10 @@ class Node:
             proof=update.zk_proof
         )
         self.update_log.append(entry)
-        
-        # ✅ CRITICAL: After applying, check if we have buffered next height
+
+        # FIX 5: Free memory for candidates at this height after they are no longer needed.
+        self.update_manager.clear_candidates_for_height(update.model_height)
+
         await self._check_buffered_updates()
 
     async def _check_buffered_updates(self):
@@ -364,12 +374,13 @@ class Node:
         if candidates:
             print(f"[Node {self.node_id}] Found {len(candidates)} buffered update(s) for H={next_height}, processing...")
             
-            # Trigger voting for the buffered height
+            vote_to_broadcast: Optional[VoteMessage] = None
+
             for update in candidates:
-                # FIX 3: Check for None to safely allow passing strict str check
                 if update.update_id is None:
                     continue
 
+                # FIX 2: Prepare vote inside lock, broadcast outside
                 async with self._vote_lock:
                     if next_height not in self._voted_heights:
                         self._voted_heights.add(next_height)
@@ -385,9 +396,12 @@ class Node:
                         self._votes_by_height[next_height].append(my_vote)
                         
                         print(f"[Node {self.node_id}] Voting for buffered update {update.update_id[:8]} at H={next_height}")
-                        
-                        await self.network_layer.broadcast_vote(my_vote)
+                        vote_to_broadcast = my_vote
                         break  # Only vote once for this height
+
+            # FIX 2: Broadcast after releasing the lock
+            if vote_to_broadcast is not None:
+                await self.network_layer.broadcast_vote(vote_to_broadcast)
             
             await self._ensure_voting_task(next_height)
 
@@ -432,11 +446,29 @@ class Node:
     async def _training_worker(self) -> None:
         """
         Performs:
-        - state sync (load current model into engine)
         - local training
         - update construction (with ZK)
-        - local commit
-        - broadcast
+        - add to own candidate pool
+        - self-vote + broadcast vote
+        - start consensus task (so originator goes through _apply_update like peers)
+        - broadcast update to peers
+        - reset data
+
+        BUG A FIX: The old code committed locally with hash_object(new_params) while
+        the update carried params_hash = sha256(serialize_model(...)). These two hash
+        functions produce different digests for the same weights, so the originator
+        always ended up with a different local_model_hash than peers — even when its
+        own update won consensus.
+
+        BUG B FIX: The old code incremented model_height before consensus. When
+        _apply_update later ran with the winning update at the same height, the guard
+        `update.model_height != self.model_height + 1` fired and silently skipped it.
+        Originators whose update LOST consensus (e.g. node 7 in the 3-way race) kept
+        their own locally-trained model forever instead of switching to the agreed one.
+
+        Solution: remove the premature local commit entirely. The originator adds its
+        update to the candidate pool, self-votes, starts a voting task, and then lets
+        _apply_update handle the state transition — identical to how every peer does it.
         """
 
         assert self.__local_data is not None
@@ -449,12 +481,11 @@ class Node:
         prev_model_copy = self.__local_model.copy()
 
         # 1. Train (offloaded to thread pool)
-        # CRITICAL FIX: Pass the current model to the stateless engine
         new_params = await loop.run_in_executor(
             None,
             self.training_engine.train_until_converged,
             self.__local_data,
-            self.__local_model  # <--- Passing initial state for training
+            self.__local_model
         )
 
         # 2. Build update (Generate ZK-SNARK)
@@ -462,27 +493,49 @@ class Node:
             prev_model_hash=self.local_model_hash,
             new_params=new_params,
             model_height=self.model_height + 1,
-            prev_model=prev_model_copy  # <-- Pass the "old" model here
+            prev_model=prev_model_copy
         )
 
-        # 3. Local audit log
-        entry = UpdateLogEntry(
-            source_node=self.node_id,
-            previous_model_hash=self.local_model_hash,
-            params_hash=hash_object(new_params),
-            proof=update.zk_proof
-        )
-        self.update_log.append(entry)
+        assert update.update_id is not None
+        print(f"*** Node {self.node_id} CREATED Update: {update.update_id} ***")
 
-        # 4. Commit locally
-        self.__prev_model = self.__local_model.copy() # Update pointer
-        self.__local_model = new_params
-        self.local_model_hash = entry.params_hash
-        self.model_height += 1
+        # 3. Add to own candidate pool so _apply_update can find it after consensus.
+        #    (Peers add it when they receive the broadcast; we add it directly here.)
+        self.update_manager.add_candidate(update)
 
-        # 5. Broadcast to peers
+        # 4. Self-vote and start our own consensus task.
+        #    BUG B FIX: do NOT commit locally here — let _apply_update do it so the
+        #    originator always ends up with the network-agreed model and hash.
+        target_height = self.model_height + 1
+        vote_to_broadcast: Optional[VoteMessage] = None
+
+        async with self._vote_lock:
+            if target_height not in self._voted_heights:
+                self._voted_heights.add(target_height)
+
+                my_vote = VoteMessage(
+                    voter_node_id=self.node_id,
+                    target_height=target_height,
+                    voted_update_id=update.update_id
+                )
+
+                if target_height not in self._votes_by_height:
+                    self._votes_by_height[target_height] = []
+                self._votes_by_height[target_height].append(my_vote)
+
+                print(f"[Node {self.node_id}] Self-voting for own update {update.update_id[:8]} at H={target_height}")
+                vote_to_broadcast = my_vote
+
+        # Broadcast vote outside the lock (FIX 2 consistency)
+        if vote_to_broadcast is not None:
+            await self.network_layer.broadcast_vote(vote_to_broadcast)
+
+        # Ensure this node's consensus window is running
+        await self._ensure_voting_task(target_height)
+
+        # 5. Broadcast update to peers
         await self.network_layer.broadcast_update(update)
 
-        # 6. Reset data (critical)
+        # 6. Reset data so set_local_data can be called again next round
         self.__local_data = None
         self._data_ready_event.clear()

@@ -2,11 +2,10 @@
 import json
 import asyncio
 from typing import Callable, Awaitable, Optional
-from nodes.types import UpdateType, VoteMessage
+from nodes.fl_types import UpdateType, VoteMessage
 
-# ✅ CORRECTION: Imports explicites pour satisfaire Pylance et éviter les erreurs d'attributs
-from websockets.client import connect
-from websockets.server import serve
+import websockets
+from websockets import connect, serve
 from websockets.exceptions import ConnectionClosed
 
 class NetworkLayer:
@@ -184,7 +183,6 @@ class NetworkLayer:
                     print(f"[Node {self.node_id}] Error processing message: {e}")
                     continue
         
-        # ✅ Utilisation directe de ConnectionClosed importé
         except ConnectionClosed:
             print(f"[Node {self.node_id}] Connection closed by {remote_addr}")
         except Exception as e:
