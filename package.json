@@ -1,0 +1,29 @@
+{
+  "name": "zksnark-federated-learning",
+  "version": "1.0.0",
+  "description": "Verifiable federated learning: a zk-SNARK that a model update really is the gradient step on committed data, under BFT consensus",
+  "main": "index.js",
+  "scripts": {
+    "setup": "python3 scripts/setup_circuit.py",
+    "test": "python3 -m pytest tests/ -q"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bl4ckFlow/ZKSNARK-Federated-Learning.git"
+  },
+  "keywords": [],
+  "author": "Abderraouf LAARBI",
+  "license": "MIT",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Bl4ckFlow/ZKSNARK-Federated-Learning/issues"
+  },
+  "homepage": "https://github.com/Bl4ckFlow/ZKSNARK-Federated-Learning#readme",
+  "dependencies": {
+    "circomlib": "2.0.5",
+    "snarkjs": "0.7.6"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

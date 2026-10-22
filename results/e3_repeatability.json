@@ -1,0 +1,42 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.39",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "node": "v24.20.0",
+    "circom": "circom compiler 2.2.3",
+    "snarkjs": "snarkjs@0.7.6",
+    "timestamp": "2026-09-08T21:15:32Z"
+  },
+  "loss": 0.05,
+  "latency_ms": 50.0,
+  "rounds_per_seed": 15,
+  "seeds": 3,
+  "repeats": 3,
+  "repeat_rates": [
+    1.0,
+    1.0,
+    0.822
+  ],
+  "repeat_rate_min": 0.822,
+  "repeat_rate_max": 1.0,
+  "repeat_rate_spread": 0.178,
+  "per_seed_rates": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.467
+  ],
+  "per_seed_rate_min": 0.467,
+  "per_seed_rate_max": 1.0,
+  "per_seed_rate_spread": 0.533,
+  "pooled_agreed": 127,
+  "pooled_rounds": 135,
+  "repeat_rate_stdev": 0.103,
+  "per_seed_rate_stdev": 0.178
+}

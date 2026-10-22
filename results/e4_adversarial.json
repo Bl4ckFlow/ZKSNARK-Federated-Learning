@@ -1,0 +1,445 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.39",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "node": "v24.20.0",
+    "circom": "circom compiler 2.2.3",
+    "snarkjs": "snarkjs@0.7.6",
+    "timestamp": "2026-09-08T20:24:06Z"
+  },
+  "poison1": {
+    "name": "POISON1: prove an attacker-chosen model",
+    "v1_accepted": true,
+    "v1_effort": "one integer division per parameter; no data required",
+    "v2_accepted": false,
+    "v2_reason": "Error: Assert Failed. Error in template ModelUpdateCheck_172 line: 175",
+    "v2_uncommitted_data_accepted": false,
+    "v2_uncommitted_reason": "Error: Assert Failed. Error in template ModelUpdateCheck_172 line: 111"
+  },
+  "live": [
+    {
+      "name": "equivocating voter",
+      "adversary": "EquivocatingVoter",
+      "n": 10,
+      "detected_by": "9/9",
+      "detected_everywhere": true,
+      "blacklists_converged": true,
+      "false_positives": [],
+      "rounds_agreed": 3,
+      "rounds": 3,
+      "final_heights": [
+        3
+      ],
+      "rate_limited": 0,
+      "final_accuracy": 1.0
+    },
+    {
+      "name": "equivocating proposer",
+      "adversary": "EquivocatingProposer",
+      "n": 10,
+      "detected_by": "9/9",
+      "detected_everywhere": true,
+      "blacklists_converged": true,
+      "false_positives": [],
+      "rounds_agreed": 3,
+      "rounds": 3,
+      "final_heights": [
+        3
+      ],
+      "rate_limited": 0,
+      "final_accuracy": 1.0
+    },
+    {
+      "name": "flooder",
+      "adversary": "Flooder",
+      "n": 10,
+      "detected_by": "0/9",
+      "detected_everywhere": false,
+      "blacklists_converged": true,
+      "false_positives": [],
+      "rounds_agreed": 3,
+      "rounds": 3,
+      "final_heights": [
+        3
+      ],
+      "rate_limited": 7919,
+      "final_accuracy": 1.0
+    }
+  ],
+  "committed_poisoning": {
+    "name": "committed-but-adversarial data, calibrated to stay provable: directed features, wrong labels, magnitude swept so the step sits just under the in-circuit clipping bound",
+    "magnitudes_tried": [
+      0.25,
+      0.5,
+      1.0,
+      2.0,
+      4.0
+    ],
+    "no_attack_accuracy": 0.9472,
+    "runs": [
+      {
+        "poisoned_of_10": 2,
+        "rule": "fedavg",
+        "trim_holds": true,
+        "accuracy": 0.8417,
+        "accuracy_min": 0.7611,
+        "accuracy_max": 0.9139,
+        "accuracy_lost": 0.1166,
+        "accuracy_lost_min": 0.0333,
+        "accuracy_lost_max": 0.1667,
+        "linf_from_clean": 857677,
+        "blocked_in_circuit": 0,
+        "poison_magnitude": 1.0,
+        "seeds": [
+          31,
+          32,
+          33
+        ]
+      },
+      {
+        "poisoned_of_10": 2,
+        "rule": "trimmed_mean",
+        "trim_holds": true,
+        "accuracy": 0.9306,
+        "accuracy_min": 0.9278,
+        "accuracy_max": 0.9333,
+        "accuracy_lost": 0.0166,
+        "accuracy_lost_min": 0.0,
+        "accuracy_lost_max": 0.025,
+        "linf_from_clean": 342623,
+        "blocked_in_circuit": 0,
+        "poison_magnitude": 0.5,
+        "seeds": [
+          31,
+          32,
+          33
+        ]
+      },
+      {
+        "poisoned_of_10": 2,
+        "rule": "median",
+        "trim_holds": true,
+        "accuracy": 0.9333,
+        "accuracy_min": 0.925,
+        "accuracy_max": 0.9361,
+        "accuracy_lost": 0.0139,
+        "accuracy_lost_min": 0.0028,
+        "accuracy_lost_max": 0.0222,
+        "linf_from_clean": 316982,
+        "blocked_in_circuit": 0,
+        "poison_magnitude": 0.25,
+        "seeds": [
+          31,
+          32,
+          33
+        ]
+      },
+      {
+        "poisoned_of_10": 3,
+        "rule": "fedavg",
+        "trim_holds": true,
+        "accuracy": 0.8306,
+        "accuracy_min": 0.7,
+        "accuracy_max": 0.8917,
+        "accuracy_lost": 0.1277,
+        "accuracy_lost_min": 0.0555,
+        "accuracy_lost_max": 0.2278,
+        "linf_from_clean": 1001866,
+        "blocked_in_circuit": 0,
+        "poison_magnitude": 1.0,
+        "seeds": [
+          31,
+          32,
+          33
+        ]
+      },
+      {
+        "poisoned_of_10": 3,
+        "rule": "trimmed_mean",
+        "trim_holds": false,
+        "accuracy": 0.8444,
+        "accuracy_min": 0.7389,
+        "accuracy_max": 0.8806,
+        "accuracy_lost": 0.1139,
+        "accuracy_lost_min": 0.0666,
+        "accuracy_lost_max": 0.1889,
+        "linf_from_clean": 791064,
+        "blocked_in_circuit": 0,
+        "poison_magnitude": 1.0,
+        "seeds": [
+          31,
+          32,
+          33
+        ]
+      },
+      {
+        "poisoned_of_10": 3,
+        "rule": "median",
+        "trim_holds": true,
+        "accuracy": 0.9056,
+        "accuracy_min": 0.9028,
+        "accuracy_max": 0.9139,
+        "accuracy_lost": 0.0333,
+        "accuracy_lost_min": 0.025,
+        "accuracy_lost_max": 0.0527,
+        "linf_from_clean": 568312,
+        "blocked_in_circuit": 0,
+        "poison_magnitude": 0.25,
+        "seeds": [
+          31,
+          32,
+          33
+        ]
+      }
+    ],
+    "notes": [
+      "trimmed mean drops 2 per side; needs >= f=2 -> holds",
+      "trimmed mean drops 2 per side; needs >= f=3 -> DOES NOT HOLD (bound is vacuous)"
+    ],
+    "why": "every poisoned proposal carries a valid proof: the data was committed before training and the step is a correct gradient step on it. The circuit cannot and does not stop this -- only the aggregation rule can, and only while enough is trimmed per side.",
+    "seeds": [
+      31,
+      32,
+      33
+    ],
+    "no_attack_accuracy_min": 0.9278,
+    "no_attack_accuracy_max": 0.9583,
+    "per_seed": [
+      {
+        "name": "committed-but-adversarial data, calibrated to stay provable: directed features, wrong labels, magnitude swept so the step sits just under the in-circuit clipping bound",
+        "magnitudes_tried": [
+          0.25,
+          0.5,
+          1.0,
+          2.0,
+          4.0
+        ],
+        "no_attack_accuracy": 0.9583,
+        "runs": [
+          {
+            "poisoned_of_10": 2,
+            "rule": "fedavg",
+            "poison_magnitude": 1.0,
+            "accuracy": 0.8417,
+            "accuracy_lost": 0.1166,
+            "linf_from_clean": 857677,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 2,
+            "rule": "trimmed_mean",
+            "poison_magnitude": 0.5,
+            "accuracy": 0.9333,
+            "accuracy_lost": 0.025,
+            "linf_from_clean": 331084,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 2,
+            "rule": "median",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.9361,
+            "accuracy_lost": 0.0222,
+            "linf_from_clean": 267750,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "fedavg",
+            "poison_magnitude": 1.0,
+            "accuracy": 0.8306,
+            "accuracy_lost": 0.1277,
+            "linf_from_clean": 1001866,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "trimmed_mean",
+            "poison_magnitude": 1.0,
+            "accuracy": 0.8444,
+            "accuracy_lost": 0.1139,
+            "linf_from_clean": 791064,
+            "blocked_in_circuit": 0,
+            "trim_holds": false
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "median",
+            "poison_magnitude": 0.5,
+            "accuracy": 0.9056,
+            "accuracy_lost": 0.0527,
+            "linf_from_clean": 568312,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          }
+        ],
+        "notes": [
+          "trimmed mean drops 2 per side; needs >= f=2 -> holds",
+          "trimmed mean drops 2 per side; needs >= f=3 -> DOES NOT HOLD (bound is vacuous)"
+        ],
+        "why": "every poisoned proposal carries a valid proof: the data was committed before training and the step is a correct gradient step on it. The circuit cannot and does not stop this -- only the aggregation rule can, and only while enough is trimmed per side."
+      },
+      {
+        "name": "committed-but-adversarial data, calibrated to stay provable: directed features, wrong labels, magnitude swept so the step sits just under the in-circuit clipping bound",
+        "magnitudes_tried": [
+          0.25,
+          0.5,
+          1.0,
+          2.0,
+          4.0
+        ],
+        "no_attack_accuracy": 0.9472,
+        "runs": [
+          {
+            "poisoned_of_10": 2,
+            "rule": "fedavg",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.9139,
+            "accuracy_lost": 0.0333,
+            "linf_from_clean": 530134,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 2,
+            "rule": "trimmed_mean",
+            "poison_magnitude": 0.5,
+            "accuracy": 0.9306,
+            "accuracy_lost": 0.0166,
+            "linf_from_clean": 342623,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 2,
+            "rule": "median",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.9333,
+            "accuracy_lost": 0.0139,
+            "linf_from_clean": 325538,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "fedavg",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.8917,
+            "accuracy_lost": 0.0555,
+            "linf_from_clean": 718401,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "trimmed_mean",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.8806,
+            "accuracy_lost": 0.0666,
+            "linf_from_clean": 697217,
+            "blocked_in_circuit": 0,
+            "trim_holds": false
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "median",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.9139,
+            "accuracy_lost": 0.0333,
+            "linf_from_clean": 582015,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          }
+        ],
+        "notes": [
+          "trimmed mean drops 2 per side; needs >= f=2 -> holds",
+          "trimmed mean drops 2 per side; needs >= f=3 -> DOES NOT HOLD (bound is vacuous)"
+        ],
+        "why": "every poisoned proposal carries a valid proof: the data was committed before training and the step is a correct gradient step on it. The circuit cannot and does not stop this -- only the aggregation rule can, and only while enough is trimmed per side."
+      },
+      {
+        "name": "committed-but-adversarial data, calibrated to stay provable: directed features, wrong labels, magnitude swept so the step sits just under the in-circuit clipping bound",
+        "magnitudes_tried": [
+          0.25,
+          0.5,
+          1.0,
+          2.0,
+          4.0
+        ],
+        "no_attack_accuracy": 0.9278,
+        "runs": [
+          {
+            "poisoned_of_10": 2,
+            "rule": "fedavg",
+            "poison_magnitude": 1.0,
+            "accuracy": 0.7611,
+            "accuracy_lost": 0.1667,
+            "linf_from_clean": 1226171,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 2,
+            "rule": "trimmed_mean",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.9278,
+            "accuracy_lost": 0.0,
+            "linf_from_clean": 370563,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 2,
+            "rule": "median",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.925,
+            "accuracy_lost": 0.0028,
+            "linf_from_clean": 316982,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "fedavg",
+            "poison_magnitude": 1.0,
+            "accuracy": 0.7,
+            "accuracy_lost": 0.2278,
+            "linf_from_clean": 1301193,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "trimmed_mean",
+            "poison_magnitude": 1.0,
+            "accuracy": 0.7389,
+            "accuracy_lost": 0.1889,
+            "linf_from_clean": 1156361,
+            "blocked_in_circuit": 0,
+            "trim_holds": false
+          },
+          {
+            "poisoned_of_10": 3,
+            "rule": "median",
+            "poison_magnitude": 0.25,
+            "accuracy": 0.9028,
+            "accuracy_lost": 0.025,
+            "linf_from_clean": 547761,
+            "blocked_in_circuit": 0,
+            "trim_holds": true
+          }
+        ],
+        "notes": [
+          "trimmed mean drops 2 per side; needs >= f=2 -> holds",
+          "trimmed mean drops 2 per side; needs >= f=3 -> DOES NOT HOLD (bound is vacuous)"
+        ],
+        "why": "every poisoned proposal carries a valid proof: the data was committed before training and the step is a correct gradient step on it. The circuit cannot and does not stop this -- only the aggregation rule can, and only while enough is trimmed per side."
+      }
+    ]
+  }
+}

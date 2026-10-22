@@ -1,0 +1,41 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.39",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "node": "v24.20.0",
+    "circom": "circom compiler 2.2.3",
+    "snarkjs": "snarkjs@0.7.6",
+    "timestamp": "2026-09-08T21:16:49Z"
+  },
+  "measurements": [
+    {
+      "circuit": "update_check_n4_k8_d4",
+      "constraints": 19402,
+      "n_features": 4,
+      "batch_size": 8,
+      "merkle_depth": 4,
+      "prove_cold_s": 1.093,
+      "prove_warm_median_s": 0.839,
+      "prove_warm_min_s": 0.733,
+      "verify_median_ms": 15.12,
+      "proof_bytes": 742,
+      "zkey_mb": 9.5,
+      "samples_per_proof": 8
+    },
+    {
+      "circuit": "update_check_v1 (ablation)",
+      "constraints": 6,
+      "n_features": 2,
+      "batch_size": 0,
+      "merkle_depth": 0,
+      "prove_cold_s": 0.52,
+      "prove_warm_median_s": 0.407,
+      "prove_warm_min_s": 0.405,
+      "verify_median_ms": 336.86,
+      "proof_bytes": 742,
+      "zkey_mb": 0.0,
+      "samples_per_proof": 0
+    }
+  ]
+}

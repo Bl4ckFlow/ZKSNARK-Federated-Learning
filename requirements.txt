@@ -1,0 +1,12 @@
+# Pinned so a reported number can be reproduced, not approximated.
+# Regenerate with:  pip freeze --exclude-editable > requirements.txt
+cryptography==50.0.1
+numpy==2.5.3
+scikit-learn==1.9.0
+scipy==1.18.1
+websockets==17.1
+
+# Test and evaluation tooling
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-timeout==2.4.0

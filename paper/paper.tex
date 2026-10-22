@@ -1,0 +1,1403 @@
+\documentclass{llncs}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{csquotes}
+\usepackage{hyphenat}
+\hyphenation{pro-ble-ma}
+
+\usepackage{amssymb}
+\usepackage{amsmath}
+\usepackage{array}
+\usepackage{graphicx}
+\graphicspath{ {images/} }
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{multirow}
+
+\lstset{
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  frame=single,
+  language=C
+}
+
+% Note: llncs.cls already provides theorem/lemma/corollary/proposition and a
+% proof environment with \qed.  Do not \newtheorem them again.
+
+\begin{document}
+
+\title{Decentralized Federated Learning\\with zk-SNARKs and Byzantine-Resilient Consensus}
+
+\author{Abderraouf LAARBI \and Kenza RIAHI}
+\institute{ESILV\\
+\email{abderraouf.laarbi@edu.devinci.fr, kenza.riahi@devinci.fr}}
+
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+Federated Learning lets participants train a shared model without pooling their
+data, but in a decentralized setting nothing forces a participant to have
+actually trained. We present a peer-to-peer federated learning system in which
+each node publishes a zk-SNARK establishing that its update is exactly the
+fixed-point gradient step computed from the current global model on a batch of
+data the node committed to \emph{before} training, and in which the verifier ---
+not the prover --- supplies the public inputs against which that proof is checked.
+Nodes then agree on the \emph{aggregate} of the verified proposal set through a
+leaderless two-phase Byzantine-fault-tolerant protocol: a quorum of matching
+prevotes licenses a lock, a quorum of matching precommits forms a transferable
+certificate, and any node holding one commits regardless of its own timers. Both
+quorums are transferable objects rather than local observations, which is what
+lets a node that missed them adopt the result instead of stalling. We
+state the fault model explicitly ($n \geq 3f+1$, quorum $q > (n+f)/2$, partial
+synchrony), prove agreement, and argue progress. Equivocation by either a voter
+or a proposer yields self-verifying evidence that every honest node checks for
+itself. Every committed transition is written to a hash-chained log that an
+outside party can re-verify offline, re-checking each proof against the model as
+of that height and recomputing each aggregate. Our circuit for a four-feature
+logistic regression over a batch of eight samples compiles to 19{,}402 R1CS
+constraints and proves in 0.84\,s; an ablation against a
+6-constraint circuit of the kind used in prior proof-of-concept work shows the
+latter admits a chosen-model forgery at the cost of one integer division per
+parameter. Over 151 automated tests and five measured experiments we report
+where the system holds and where it does not: coordinate-wise trimmed mean
+loses 11.4\% accuracy precisely when fewer values are trimmed than
+there are adversaries, and at 20\% packet loss the protocol makes
+almost no progress at any parameter setting. We claim no privacy for the
+published updates.
+\keywords{Decentralized Federated Learning \and zk-SNARKs \and Byzantine Fault
+Tolerance \and Consensus \and Verifiable Training \and Proof of Training}
+\end{abstract}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+Federated Learning (FL)~\cite{mcmahan2017fedavg} moves computation to the data
+rather than the reverse. Removing the central aggregator removes a single point
+of trust and failure, but it replaces one problem with a harder one: with no
+trusted party, on what basis does a participant accept another participant's
+model update?
+
+The honest answer, in most decentralized FL systems, is \emph{none}. An update
+is a vector of numbers. Nothing about the vector reveals whether it came from
+running the agreed training algorithm on real data or from an optimizer pointed
+at whatever objective the adversary preferred. Byzantine-robust aggregation
+rules~\cite{blanchard2017krum,yin2018trimmedmean,cao2021fltrust} bound the
+influence of a minority of such updates statistically, but they do not
+\emph{detect} them, and their guarantees hold only under assumptions about how
+many adversaries there are.
+
+This paper takes the position that the update should carry its own proof, that
+the proof should be checked against a statement the \emph{verifier} chooses, and
+that the resulting protocol should state the fault model it needs rather than
+assert resilience. Concretely we address three problems together.
+
+\begin{enumerate}
+  \item \textbf{An update that was never trained.} A node can publish any
+    vector. We require a zk-SNARK that the published weights are the fixed-point
+    gradient step from the current global model on a batch of samples whose
+    Merkle root the node registered before training began. The data stays
+    private; the fact that the computation was performed does not.
+  \item \textbf{Disagreement about what was decided.} Nodes must commit the same
+    global model at the same height even when a minority is actively hostile. We
+    use a leaderless two-phase BFT protocol whose safety we prove under an
+    explicitly stated fault model.
+  \item \textbf{Misbehaviour that leaves no trace.} A Byzantine node that sends
+    conflicting messages to different peers should not merely be suspected but
+    \emph{provably} identified, by evidence any third party can check.
+\end{enumerate}
+
+\paragraph{An earlier design, and why it failed.}
+This work began as a redesign of our own proof-of-concept, and the failures of
+that prototype shape the contributions, so we state them plainly. Its circuit
+had six R1CS constraints and accepted the gradient as a free witness signal: a
+prover could choose the target weights, back-derive a gradient satisfying the
+single subtraction, and obtain a valid proof. Soundness was vacuous --- every
+update was provable. Its consensus committed the first valid update to arrive,
+so the global model was a chain of single-node steps ordered by network latency
+rather than an aggregate of anything. Its quorum, $n=10$ and $q=6$, was reported
+as tolerating 30\% Byzantine nodes; $2 \cdot 6 > 10 + 3$ is false,
+so it tolerates one. We report the difference between that design and this one
+as a measured ablation rather than as a claim.
+
+\paragraph{Contributions.}
+\begin{itemize}
+  \item A Circom circuit (Section~\ref{sec:circuit}) that binds an update to a
+    committed dataset, a specific base model, and a specific learning rate, with
+    every intermediate value range-checked and fixed-point division constrained
+    by an explicitly range-checked remainder. 19{,}402 constraints for
+    $n=4$ features and a batch of $k=8$.
+  \item A verification discipline (Section~\ref{sec:verify}) in which the
+    verifier constructs the public inputs from its own committed state and
+    rejects any proof whose public signals differ, \emph{before} the pairing
+    check.
+  \item A leaderless two-phase consensus protocol (Section~\ref{sec:consensus})
+    that decides the aggregate of the verified proposal set, with a stated fault
+    model, a proof of agreement, and a liveness argument. We show that the
+    single-phase alternative deadlocks on any network with non-zero delay, and
+    that the two-phase one does too unless \emph{polkas} are gossiped as
+    transferable certificates: without a proposer to carry a proof-of-lock, a
+    split between locked and unlocked correct nodes is stable across every
+    subsequent sub-round. Section~\ref{sec:eval-consensus} reports what the
+    extra $n(n-1)$ deliveries per height cost.
+  \item Accountable equivocation detection for \emph{both} voters and proposers,
+    producing transferable evidence, together with the observation that
+    detection alone is insufficient: an equivocating proposer's first message is
+    accepted before its second exposes it, and failing to retract it splits the
+    network permanently (Section~\ref{sec:accountability}).
+  \item An evaluation (Section~\ref{sec:eval}) covering learning quality against
+    three baselines, proof cost, consensus cost and message complexity, five
+    adversarial scenarios, and offline auditability --- including the
+    configurations in which the system fails.
+\end{itemize}
+
+All code, circuits, and the JSON result files backing every number in
+Section~\ref{sec:eval} are provided as an anonymized artifact at
+\texttt{[artifact URL --- to be inserted at submission]}. Each experiment is
+regenerable with a single \texttt{make} target, and
+\texttt{scripts/check\_paper\_numbers.py} re-checks every quantitative claim in
+this paper against those files, so a stale number fails a script rather than a
+reader.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+
+\subsection{Threats to Federated Learning}
+
+Mothukuri et al.~\cite{mothukuri2021survey} and Lyu et
+al.~\cite{lyu2020threats} survey the attack surface: model poisoning, backdoors,
+membership inference, and reconstruction. Kairouz et
+al.~\cite{kairouz2021advances} identify verifying client behaviour without a
+trusted third party as an open problem, which is the problem this paper attacks.
+
+Two results bound what any scheme of our kind can claim about privacy. Zhu et
+al.~\cite{zhu2019deepleakage} and Geiping et al.~\cite{geiping2020inverting}
+reconstruct training samples from published gradients. Since every node in an FL
+protocol needs the per-node update in order to aggregate it, \emph{publishing
+the update is the leak}, and no amount of zero-knowledge in the proof changes
+that. We return to this in Section~\ref{sec:limitations}.
+
+\subsection{Zero-Knowledge Proofs of Training}
+
+The work closest to our core claim proves that a model is the result of running
+a training procedure. Garg et al.~\cite{garg2023zkpot} give the first practical
+zero-knowledge proofs of training for logistic regression, and
+Kaizen~\cite{abbaszadeh2024kaizen} extends this to deep networks with recursive
+composition. Both operate at a far larger scale than we do and at
+correspondingly greater cost.
+
+We do not claim to improve on either. Our circuit proves a single fixed-point
+gradient step on a small model; the contribution here is the \emph{composition}
+of such a proof with a Byzantine-fault-tolerant agreement protocol and an
+auditable log, and the demonstration that each individual piece must be built
+much more carefully than a proof-of-concept suggests.
+
+\subsection{zk-SNARKs Applied to Federated Learning}
+
+zkFL~\cite{wang2024zkfl} has a central aggregator prove that it aggregated
+correctly, which is the dual of our problem: it protects clients from the
+server, whereas we protect participants from each other. ByzSFL~\cite{fan2025byzsfl}
+combines zero-knowledge proofs with Byzantine-robust aggregation, and
+Fu et al.~\cite{fu2025zkpconsensus} use ZK proofs inside a blockchain-secured FL
+consensus. Federify~\cite{keshavarzkalhori2023federify} and
+VeriBlock-FL~\cite{raghavarapu_veriblockfl} anchor verification on a blockchain.
+These systems retain either a central aggregator or an external ordering
+service.
+
+\begin{table}[t]
+\centering
+\caption{Where this work sits. \textbf{Prover} is who produces the proof;
+\textbf{Ordering} is what decides the sequence of global models;
+\textbf{Decision} is what a height commits. A dash means the system does not
+address that axis.}
+\label{tab:related}
+\begin{tabular}{llllc}
+\toprule
+\textbf{System} & \textbf{Prover} & \textbf{Ordering} & \textbf{Decision} &
+\textbf{Fault model} \\
+\midrule
+zkFL~\cite{wang2024zkfl}        & aggregator & central server & server's sum & --- \\
+Federify~\cite{keshavarzkalhori2023federify} & client & blockchain & on-chain agg. & chain's \\
+VeriBlock-FL~\cite{raghavarapu_veriblockfl} & client & blockchain & on-chain agg. & chain's \\
+VerifBFL~\cite{bellachia2025verifbfl} & client & blockchain & on-chain agg. & chain's \\
+ByzSFL~\cite{fan2025byzsfl}     & aggregator & central server & robust agg. & robust-agg. \\
+Byeon et al.~\cite{byeon2025trusted} & client & ring order & predecessor's model & --- \\
+\midrule
+This work & client & in-protocol BFT & aggregate of \emph{all} &
+$n \ge 3f{+}1$, stated \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:related} is the short version. The systems that verify training
+either keep a central aggregator, in which case ordering is not a problem they
+have, or delegate ordering to a blockchain, in which case the fault model is the
+chain's and the latency and infrastructure come with it. The one leaderless
+design in the list orders nodes in a ring, which makes each height depend on one
+predecessor. What is missing from every row is a height that decides the
+aggregate of \emph{all} verified proposals under a fault model the paper states
+and enforces, which is the gap this work addresses.
+
+\subsection{Decentralized FL}
+
+Lalitha et al.~\cite{lalitha2019p2pfl} perform Bayesian model averaging over a
+peer-to-peer graph with no aggregator but no verification either. Wang et
+al.~\cite{wang2023enhancing} and Ferenczi and B\u{a}dic\u{a}~\cite{ferenczi2024decentralized}
+coordinate decentralized FL through smart contracts, inheriting the blockchain's
+latency and infrastructure requirements. Byeon et al.~\cite{byeon2025trusted}
+arrange healthcare IoT nodes in a ring where each verifies its predecessor's
+proof before forwarding; the sequential structure means one slow or absent node
+delays the round. VerifBFL~\cite{bellachia2025verifbfl} combines verifiable
+training with a blockchained FL pipeline.
+
+Our design differs in that all $n$ nodes participate concurrently and
+symmetrically, agreement is reached by an in-protocol BFT round rather than an
+external chain, and the decision is the aggregate of \emph{all} verified
+proposals rather than a selection among them.
+
+\subsection{Byzantine-Robust Aggregation}
+
+Krum~\cite{blanchard2017krum}, coordinate-wise trimmed mean and
+median~\cite{yin2018trimmedmean}, and FLTrust~\cite{cao2021fltrust} bound the
+influence of malicious updates on the aggregate. These are complementary to
+proofs of training, not alternatives: a proof establishes that an update is the
+correct gradient step on committed data, and an aggregation rule bounds the
+damage when the committed data is itself adversarial. We use coordinate-wise
+trimmed mean and report, in Section~\ref{sec:eval-adversarial}, exactly what
+happens when its precondition is violated.
+
+\subsection{Byzantine Consensus}
+
+PBFT~\cite{castro1999pbft} established practical BFT in the partially
+synchronous model~\cite{dwork1988partialsynchrony}, whose necessity follows from
+FLP~\cite{fischer1985flp}. Tendermint~\cite{buchman2018tendermint} and
+HotStuff~\cite{yin2019hotstuff} are the modern lineage. Our round structure is
+Tendermint's, specialised to a leaderless setting where the value under
+consideration is a deterministic function of the proposal set rather than a
+proposer's choice; the safety argument in Section~\ref{sec:safety} is
+Tendermint's argument adapted to that setting. Polygraph~\cite{civit2021polygraph}
+introduced accountable Byzantine agreement, in which misbehaviour produces
+irrefutable evidence; our equivocation handling is in that tradition.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{System and Threat Model}
+\label{sec:model}
+
+\subsection{Participants}
+
+A permissioned set of $n$ nodes, fixed for a run and known to all. Each node
+holds an Ed25519 key pair; its identity is the hex encoding of its public key.
+Before height~1, each node registers a Merkle root $\rho_i$ over its quantized,
+batched dataset together with a signature; the binding from node to root is
+immutable thereafter.
+
+This provides \textbf{no Sybil resistance}. An adversary able to enrol
+identities at will controls the vote and the model, and no amount of proving
+changes that. Admission control is out of scope and must be provided by whatever
+operates the deployment.
+
+\subsection{Fault Model}
+
+At most $f$ nodes are Byzantine: arbitrary behaviour, including equivocation,
+collusion among all $f$, adaptive timing, and full visibility of the network.
+The remaining $n-f$ nodes are correct, though they may be slow, may crash and
+restart (recovering from an on-disk log), and may be temporarily partitioned.
+Communication is \emph{partially synchronous}~\cite{dwork1988partialsynchrony}:
+messages between correct nodes are eventually delivered, and after an unknown
+global stabilisation time delays are bounded by an unknown constant $\Delta$.
+Byzantine nodes cannot forge signatures and cannot break the discrete-logarithm
+assumptions on \textbf{bn128}.
+
+The quorum $q$ must satisfy
+\begin{equation}
+  2q > n + f \quad \text{(safety)}, \qquad n - f \geq q \quad \text{(liveness)},
+  \label{eq:quorum}
+\end{equation}
+which together force $n \geq 3f+1$. The first inequality makes any two quorums
+share at least $2q-n > f$ nodes, hence at least one correct node; the second
+makes the correct nodes alone able to form a quorum. Our implementation refuses
+to start with any $(n, f, q)$ violating~(\ref{eq:quorum}), rather than allowing a
+run to advertise a guarantee it does not hold. As noted in the introduction, the
+parameters $n=10$, $q=6$ used in our earlier prototype satisfy~(\ref{eq:quorum})
+only for $f=1$.
+
+\subsection{What the System Does Not Defend}
+
+Stated here so that no later claim is read past its scope; expanded in
+Section~\ref{sec:limitations}. Updates are public and therefore invertible.
+Groth16 requires a per-circuit trusted setup. A node that commits to a poisoned
+dataset and trains on it correctly produces a valid proof, and nothing binds a
+batch to a height, so it may keep re-training on its worst one. Trimmed-mean
+robustness is conditional on trimming at least $f$ values per side. Sustained
+packet loss defeats the protocol. Nothing here is constant-time.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{The Verifiable Update Circuit}
+\label{sec:circuit}
+
+\subsection{Fixed-Point Representation}
+
+zk-SNARK arithmetic is over a prime field, so we represent a real value $v$ as
+the integer $\tilde v = \mathrm{round}(v \cdot S)$ with $S = 10^6$, negative
+values being encoded as field elements $p - |\tilde v|$. Quantization on the
+Python side uses exact rational arithmetic with ties resolved away from zero, so
+that trainer and circuit agree bit-for-bit rather than approximately.
+
+Every signal is range-checked with \texttt{Num2Bits}: features satisfy
+$|\tilde x| < 2^{25}$, weights and bias $|\tilde w|, |\tilde b| < 2^{26}$, and
+the pre-activation $|\tilde z| < 2^{35}$, where the last bound is
+\emph{derived} from the first two and the feature count rather than chosen. This
+matters: without range checks a prover can present a huge field element that the
+circuit's own arithmetic then reads as a small negative number, and the
+constraints are satisfied by a witness that means nothing.
+
+\subsection{Fixed-Point Division}
+\label{sec:div}
+
+The single subtlest component. Circom's \verb|\| and \verb|%| operate on field
+elements, so for a negative numerator they divide $p - |{\rm num}|$ and return a
+quotient that is arithmetically meaningless while still satisfying a naive
+constraint. Our \texttt{DivConst} template computes Euclidean division that
+matches Python's \verb|//| exactly, including for negative numerators, by
+offsetting before dividing:
+
+\begin{lstlisting}
+var SHIFT = divisor * (1 << quotBits);
+q <-- (num + SHIFT) \ divisor - (1 << quotBits);
+r <-- (num + SHIFT) % divisor;
+num === q * divisor + r;
+Num2Bits(remBits)(r);            // 0 <= r
+Num2Bits(remBits)(divisor-1-r);  // r < divisor
+SignedRangeCheck(quotBits)(q);   // q in range
+\end{lstlisting}
+
+The two range checks on $r$ are what make the constraint
+$\mathrm{num} = q\,d + r$ pin down a unique $(q, r)$; without them any $q$ admits
+a compensating $r$ and the division constrains nothing. Our earlier circuit's
+\verb|dot_product * SCALE === sum| had exactly this defect.
+
+\paragraph{The numerator needs a bound too.}
+$\mathrm{num} = q\,d + r$ is an equation \emph{in the field}, so the checks on
+$q$ and $r$ isolate a unique integer pair only while the numerator cannot wrap:
+we need
+\begin{equation}
+  |\mathrm{num}| \;\le\; d \cdot 2^{\rm quotBits} ,
+  \label{eq:numbound}
+\end{equation}
+or a large field element satisfies the equation with an in-range $(q, r)$ that
+means nothing. This is the same class of defect as the missing remainder check
+and deserves the same treatment, so we state the bound for every division in the
+circuit rather than leaving it to be re-derived.
+
+Each numerator is an \emph{assigned} combination of range-checked signals
+(\texttt{<==}), never a free witness, so each has a derivable bound: the forward
+pass divides $\langle \tilde{\mathbf{x}}, \tilde{\mathbf{w}}\rangle$, at most
+$n 2^{x+w} = 2^{53}$, by $S$ with a 35-bit quotient, giving $2^{55}$ of room;
+the weight update divides $\eta \sum_t e^{(t)} \tilde x^{(t)}_j$, at most
+$2^{68}$, by $kS^2$ with a 32-bit quotient, giving $2^{75}$; the bias update
+needs $2^{43}$ against $2^{55}$. \texttt{FixedPointConfig.check()} re-derives
+all four at start-up and refuses a configuration that violates
+(\ref{eq:numbound}), so widening a feature vector cannot silently invalidate the
+argument.
+
+The sigmoid was the interesting case, and writing this check is what found it.
+Its numerator is $m_{\rm sel}(a - t_{\rm sel})$, which is \emph{not} bounded by
+$|z|$: on the flat outer piece the slope $m_{\rm sel}$ is zero, so a large $|z|$
+contributes nothing, and elsewhere $|a - t_{\rm sel}|$ is at most the last
+breakpoint. That bound held for the honest witness --- the one-hot selector is
+determined by $a$ --- but it was \emph{derived from the comparator chain being
+sound} rather than enforced anywhere, and (\ref{eq:numbound}) has to hold for
+every witness, not the honest one. We now constrain the product directly with an
+\texttt{AbsBound}, at $1.16 \times 10^{12}$ against a limit of $1.68 \times
+10^{13}$. Together with an explicit range check on the activation output ---
+which the template advertised as lying in $[0, S]$ and did not enforce, though
+every downstream numerator bound depends on it --- this costs 1{,}048
+constraints, about 5.7\%, and replaces a chain of reasoning with a check.
+
+\subsection{Piecewise-Linear Sigmoid}
+
+A faithful sigmoid is expensive in R1CS. We use a five-piece linear
+approximation with breakpoints at $|z| \in \{1, 2, 3, 5\}$, reflected about
+$(0, \tfrac{1}{2})$, selected by four comparators feeding a one-hot selector
+built from monotone differences, and evaluated with one multiplication and one
+\texttt{DivConst}. Its maximum absolute error against the true sigmoid is
+$0.0117$, measured over the representable domain. This is an approximation, and
+Section~\ref{sec:limitations} states what it costs.
+
+\subsection{Statement Proved}
+
+The template $\textsf{ModelUpdateCheck}(n, k, d, S, \cdot)$ takes public
+$(\mathbf{w}_{\rm old}, b_{\rm old}, \mathbf{w}_{\rm new}, b_{\rm new}, \eta,
+\rho)$ and private $(\mathbf{x}^{(1..k)}, y^{(1..k)})$ together with $d$-level
+Merkle paths, and enforces, in order:
+
+\begin{enumerate}
+  \item range checks on every input signal;
+  \item $y^{(t)}(y^{(t)} - 1) = 0$ for each sample, and $0 \le \eta \le S$;
+  \item \textbf{Merkle inclusion} of the batch digest against the public root
+    $\rho$, where the batch digest is a Poseidon~\cite{grassi2021poseidon} chain
+    over per-sample digests, so that the batch is bound to the committed dataset
+    \emph{and} to its ordering;
+  \item the forward pass $\tilde z^{(t)} = \langle \tilde{\mathbf{x}}^{(t)},
+    \tilde{\mathbf{w}}_{\rm old}\rangle / S + \tilde b_{\rm old}$, the
+    piecewise-linear activation, and the error
+    $e^{(t)} = \widetilde{\rm pred}^{(t)} - y^{(t)} S$;
+  \item the parameter update, by \emph{constraint} rather than computation:
+    \begin{equation}
+      \tilde w_{{\rm new}, j} \;=\; \tilde w_{{\rm old}, j}
+        \;-\; \left\lfloor \frac{\eta \sum_t e^{(t)} \tilde x^{(t)}_j}
+                               {k\,S^2} \right\rfloor,
+      \qquad
+      \tilde b_{\rm new} \;=\; \tilde b_{\rm old}
+        - \left\lfloor \frac{\eta \sum_t e^{(t)}}{k\,S} \right\rfloor
+      \label{eq:update}
+    \end{equation}
+    each floor division being a \texttt{DivConst} with a range-checked
+    remainder;
+  \item a verifiable clipping bound $|\tilde w_{{\rm new}, j} - \tilde w_{{\rm
+    old}, j}| \le \delta_{\max}$ and $|\tilde b_{\rm new} - \tilde b_{\rm old}|
+    \le \delta_{\max}$, enforced with two \texttt{Num2Bits} rather than a
+    power-of-two range check, so the bound is exactly $\delta_{\max} = 5 \times
+    10^5$ and not the next power of two above it.
+\end{enumerate}
+
+Note that $b_{\rm new}$ is constrained. In the earlier circuit it was not, which
+left the bias entirely free.
+
+\subsection{Verification: the Statement Is the Verifier's}
+\label{sec:verify}
+
+A proof is meaningless if the verifier checks it against public inputs the
+prover supplied --- that establishes only that the prover was self-consistent. In
+our system the verifier constructs
+$(\mathbf{w}_{\rm old}, b_{\rm old}, \eta, \rho_{\rm proposer})$ from
+\emph{its own} committed model, its own configured learning rate, and the
+proposer's registered root, and rejects any proof whose public signals differ
+from that expectation \emph{before} performing the pairing check. The prover
+supplies the proof and $(\mathbf{w}_{\rm new}, b_{\rm new})$; it supplies
+nothing else.
+
+The ordering of public signals is a convention shared between the Circom
+template and the host code. We check it against the compiled \texttt{.sym} file
+at setup time rather than trusting the convention, since a silent reordering
+would make the verifier check a different claim than it believes it is checking.
+
+\subsection{Trusted Setup}
+
+Groth16~\cite{groth2016size} requires a per-circuit ceremony, and whoever holds
+its toxic waste can forge proofs for that circuit. Our setup script runs a real
+multi-contributor phase-2 ceremony with a final beacon over a public
+powers-of-tau transcript, which is sound as long as one contributor discards
+their randomness --- a natural fit for a peer-to-peer system, where the
+participants are already present. An offline fallback generates phase~1 locally;
+in that mode the operator can forge proofs, the script says so, and the build
+metadata records it. We regard a paper whose premise is ``no trusted party''
+as obliged to state this rather than omit it.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Consensus}
+\label{sec:consensus}
+
+\subsection{Aggregate, Do Not Select}
+
+A height decides $\mathrm{Agg}(\mu_{h-1}, P)$ over the entire verified proposal
+set $P$, not one chosen element of it. This is the difference between federated
+learning and a race: committing the first valid update to arrive, as our earlier
+design did, makes the global model a chain of single-node steps ordered by
+network latency.
+
+It has a second consequence that the protocol depends on. Because $\mathrm{Agg}$
+is a deterministic function of public inputs, two correct nodes holding the same
+proposal set necessarily vote identically. A conflicting vote is therefore
+\emph{misbehaviour} rather than a timing artefact, which is precisely what makes
+an accusation of equivocation meaningful.
+
+$\mathrm{Agg}$ orders $P$ canonically by proposal identifier, applies a
+coordinate-wise rule --- trimmed mean, median, or weighted mean --- and performs
+all arithmetic in integers with floor division. Every step is reproducible by
+any observer from public data. The trimmed mean drops
+\begin{equation}
+  t \;=\; \min\!\left(\left\lfloor \frac{\pi\,|P|}{1000} \right\rfloor,\;
+                      \left\lfloor \frac{|P|-1}{2} \right\rfloor \right),
+  \qquad \pi = 250,
+  \label{eq:trim}
+\end{equation}
+values from each end of every coordinate. The second term of the minimum is not
+cosmetic: it keeps at least one value, so the rule is total on any non-empty
+proposal set rather than raising on small ones. It also means the robustness
+precondition $t \geq f$ \emph{fails silently for small $|P|$} --- at $|P|=4$ and
+$\pi=250$, $t=1$, so a run with $f=3$ is trimming far less than its own fault
+model assumes. We therefore compute $t$ and $f$ at every height and log the
+comparison rather than leaving it implicit; Section~\ref{sec:eval-adversarial}
+reports a run where the bound is violated and the aggregate degrades exactly as
+the arithmetic predicts.
+
+\subsection{A Height}
+
+Each height proceeds in sub-rounds, each sub-round in two phases:
+
+\begin{description}
+  \item[Collect.] Proposals arrive and are verified (Section~\ref{sec:verify})
+    before being stored or relayed. Nothing unverified ever leaves a node.
+  \item[Prevote.] On timeout, a node broadcasts $\mathrm{prevote}(h, r,
+    H(\mathrm{Agg}(\mu_{h-1}, P)))$ --- or, if it holds a lock, its locked value.
+  \item[Polka and lock.] $q$ matching prevotes at sub-round $r$ constitute a
+    \emph{polka}: proof that a quorum was willing to commit that value. Only a
+    polka licenses a node to lock. A polka is a first-class transferable
+    certificate, gossiped like a commit certificate and verified from its $q$
+    signatures by whoever receives it --- without that, a node which merely
+    missed the prevotes can never leave a split (Section~\ref{sec:liveness}).
+  \item[Precommit.] A node that locked broadcasts $\mathrm{precommit}(h, r, v)$.
+    A node that saw no polka before its timer expires precommits \textsc{nil}
+    and moves to sub-round $r+1$ with a doubled collect window.
+  \item[Commit.] $q$ matching precommits form a \emph{certificate}. Any node
+    holding one commits the height, appends to its audit log, and advances ---
+    regardless of its own timers.
+\end{description}
+
+\paragraph{A height with no proposals.}
+A node whose verified proposal set is empty has nothing to aggregate and so
+prevotes nothing at all: it opens the next sub-round with a longer window rather
+than prevoting \textsc{nil}, since \textsc{nil} is the outcome of a failed
+polka, not a statement about an empty set. The height simply does not advance
+until some proposal arrives, which is why Proposition~2 assumes at least one
+correct node proposes. This is a liveness dependency and not a safety one: with
+no proposals there is no value to certify, and nothing can be committed by
+anyone. Proposing is decoupled from voting --- every node votes at every height,
+but only nodes holding data propose --- so a deployment in which some members
+are verifiers only is normal, and one in which \emph{no} correct member holds
+data does not make progress.
+
+\subsection{Why Two Phases}
+
+The two phases are not ceremony, and the single-phase alternative is not a
+simplification but a deadlock. Without a polka, a node has nothing to lock on
+except its own prevote. Correct nodes close their collect windows with different
+proposal sets on any network with non-zero delay, so they compute different
+aggregates, lock on different values, and no value ever reaches $q$ again. We
+observed exactly this in our own implementation: two nodes, two locks, zero
+rejections, no certificate, indefinitely.
+
+Locking on a polka instead means that split prevotes produce \emph{no} lock:
+every node precommits \textsc{nil}, sub-round $r+1$ opens with a longer window,
+and by then the proposal sets have converged. This is Tendermint's
+rule~\cite{buchman2018tendermint}. Converged proposal sets are enough only while
+\emph{no} node holds a lock, since a locked node prevotes its lock rather than
+its aggregate; Section~\ref{sec:liveness} shows that once one does, the two
+phases are still not sufficient unless the polka itself can be forwarded.
+
+\subsection{Safety}
+\label{sec:safety}
+
+\begin{proposition}[Agreement]
+If $2q > n+f$ and at most $f$ nodes are Byzantine, no two correct nodes commit
+different models at the same height.
+\end{proposition}
+
+\begin{proof}
+Write $v \neq v'$ for the two committed hashes and $r \le r'$ for the sub-rounds
+of their certificates $C$ and $C'$. Two quorums intersect in at least $2q - n >
+f$ members, so every pair of quorums contains a common \emph{correct} node.
+Note also that $n \ge 3f+1$ and $2q > n+f$ give $q \ge 2f+1$, so each certificate
+contains at least $q - f \ge f+1$ correct precommits.
+
+The argument rests on one property of the implementation, which we state
+separately because it is what makes the induction close:
+
+\begin{quote}
+\textbf{(I)} A correct node never prevotes at sub-round $s$ after observing a
+polka at $s$. Observing a polka sets its step to \textsc{precommit}, and the
+prevote action fires only in the \textsc{prevote} step.
+\end{quote}
+
+Consequently a correct node's prevote at $s$ reflects a lock formed
+\emph{strictly before} $s$. Because the proof leans on it, \textbf{(I)} is a
+test rather than a remark: a node is handed a polka before its own prevote timer
+fires, and the test fails if any prevote for that sub-round is ever emitted.
+
+\medskip\noindent\emph{Case $r = r'$.} $C$ and $C'$ are quorums of precommits in
+the same sub-round, so some correct node signed both, i.e.\ two different votes
+in the slot $(p, h, r, \textsc{precommit})$. A correct node signs one vote per
+slot. Contradiction.
+
+\medskip\noindent\emph{Case $r < r'$.} We show the stronger claim, stated over
+the \emph{certificate} rather than over a single vote, because that is what the
+induction step consumes:
+
+\begin{quote}
+\textbf{(C)} If a commit certificate for $v$ exists at sub-round $r$, then for
+every $r_1 \ge r$, any polka at $r_1$ is for $v$.
+\end{quote}
+
+Since $C'$ exists, some correct node precommitted $v'$ at $r'$, which it does
+only immediately after locking on $v'$ --- so a polka for $v' \neq v$ exists at
+$r' \ge r$, and \textbf{(C)} applied to $C$ gives $v' = v$, a contradiction. It
+remains to prove \textbf{(C)}, by strong induction on $r_1$.
+
+\emph{Base $r_1 = r$.} $C$ contains at least $q - f \ge f+1$ correct precommits
+for $v$ at $r$, and a correct node precommits a non-\textsc{nil} value only
+after observing a polka for it, so a polka for $v$ at $r$ exists. Suppose a
+polka for $u$ at $r$ also exists. The two polkas are quorums of prevotes in the
+same sub-round, so some correct node signed both, i.e.\ two votes in the slot
+$(p, h, r, \textsc{prevote})$. Hence $u = v$.
+
+\emph{Step.} Let $r_1 > r$ and assume \textbf{(C)} for every sub-round in $[r,
+r_1)$. Suppose a polka for $u$ at $r_1$. Its $q$ prevotes and the $q$ precommits
+of $C$ --- both quorums, which is why the claim is stated over $C$ and not over
+one node's vote --- share a correct node $p^*$, which therefore precommitted $v$ at $r$ and
+prevoted $u$ at $r_1$. Precommitting $v$ at $r$ means $p^*$ held the lock $(v,
+r)$. A correct node prevotes its locked value, so if $u \neq v$ then $p^*$'s lock
+moved off $v$ before it prevoted at $r_1$; locks move only on an observed polka,
+and only at a sub-round no earlier than the locked round. So $p^*$ observed a
+polka for some $u_0 \neq v$ at a sub-round $r_0 \in [r, r_1]$, before prevoting
+at $r_1$. By \textbf{(I)}, $r_0 \neq r_1$: a node that has seen a polka at $r_1$
+does not go on to prevote at $r_1$. Hence $r_0 \in [r, r_1)$, and the induction
+hypothesis makes that polka a polka for $v$, i.e.\ $u_0 = v$ --- contradicting
+$u_0 \neq v$. Therefore $u = v$.
+\qed
+\end{proof}
+
+Since entry $h$ records $H(\mu_{h-1})$ and the audit chain hashes each entry
+together with its predecessor's link, two correct nodes agreeing at every height
+up to $h$ hold bit-identical logs. Our simulator asserts this after every run.
+
+Proposition~1 says nothing about the \emph{quality} of $\mu_h$: $f$ Byzantine
+nodes can submit valid proofs for genuinely-trained but adversarially-chosen
+updates, and only the aggregation rule bounds their influence. It also assumes
+exactly the model of Section~\ref{sec:model}; with $f+1$ Byzantine nodes two
+conflicting certificates are constructible and the argument fails at its first
+step, as it must.
+
+\subsection{Liveness}
+\label{sec:liveness}
+
+\begin{proposition}[Progress]
+Under partial synchrony, with $n - f \ge q$, at most $f$ Byzantine nodes, and at
+least one correct node proposing, every height eventually commits at some
+correct node.
+\end{proposition}
+
+\begin{proof}[Sketch]
+After stabilisation, delays are bounded by $\Delta$. The
+collect window is $w \cdot 2^r$, so some sub-round $r^*$ has $w 2^{r^*} >
+2\Delta$ --- which presumes sub-rounds continue without bound, a hypothesis our
+implementation violated for some time (see below). From $r^*$ onward every
+message sent at the start of a phase arrives before that phase closes at every
+correct node.
+
+It does \emph{not} follow that correct nodes prevote identically merely because
+they hold the same proposal set, and this is the step at which an earlier
+version of both our argument and our implementation was wrong. A locked node
+prevotes its \emph{lock}, not $\mathrm{Agg}(P)$. If some correct nodes locked on
+$v$ at an earlier sub-round and the rest never observed that polka, the locked
+ones offer $v$ and the unlocked ones offer $\mathrm{Agg}(P) = v' \neq v$ once
+further proposals have arrived. Should neither camp reach $q$, no polka forms;
+but only a polka moves a lock, so the split reproduces itself at every
+subsequent sub-round and the height never finishes. Extra sub-rounds do not
+help, because each one recreates the same two camps.
+
+Transferable polkas are what close this. A node that observes $q$ matching
+prevotes gossips them as a certificate; a node receiving one verifies the $q$
+signatures itself and adopts the lock whenever the polka's sub-round is at least
+its own locked round. After $r^*$ every such certificate reaches every correct
+node, so all correct nodes hold the lock of the highest sub-round any of them
+has seen, and prevote it. That is $n - f \ge q$ identical prevotes, hence a
+polka, hence $q$ matching precommits, hence a certificate. Byzantine nodes can
+withhold or send garbage, neither of which prevents $q$ correct nodes from
+agreeing. \qed
+\end{proof}
+
+This is the leaderless counterpart of Tendermint's proposer re-proposing with a
+proof-of-lock from the highest round~\cite{buchman2018tendermint}. With no
+proposer to carry it, the evidence has to travel by itself. It costs one extra
+gossiped message per polka, which Section~\ref{sec:eval-consensus} accounts for
+separately rather than folding into the vote total.
+
+Four implementation details are load-bearing here, and each was a defect in our
+implementation at some point. The window must \emph{grow}, or no $r^*$ exists ---
+a run on loopback, where $\Delta \approx 0$, hides this entirely. A quorum of
+\textsc{nil} precommits must start the next sub-round immediately rather than
+waiting out a timer whose outcome overlapping quorums have already settled. And
+a node that falls behind must \emph{keep} asking for the missing height: asking
+once and never retrying leaves it stuck forever whenever the answer is lost.
+
+The fourth is the one the proposition's proof makes obvious in hindsight, and it
+is the most severe. The proof needs sub-rounds to keep opening; our
+implementation capped them at a parameter $r_{\max}$, past which a node asked a
+peer to send it the height instead. But a sync request can only be answered by a
+node that is \emph{ahead}, and the situation that exhausts the budget is
+precisely the one in which no quorum formed --- so nobody is ahead, nothing
+answers, and because every correct node reaches the budget at roughly the same
+time, all of them fall silent together. The implementation contradicted its own
+liveness argument, and the code was not a faithful rendering of the protocol we
+had proved. A node now keeps its clock running and asks for sync alongside;
+$r_{\max}$ is the point at which it starts asking, not a ceiling. We report the
+consequence in Section~\ref{sec:eval-consensus}, because it accounts for
+behaviour we had been reporting as a limit of the design.
+
+\paragraph{A correct node must not forget that it voted.}
+Both cases of Proposition~1 rest on \emph{a correct node signs one vote per
+slot}, and the fault model admits crash-restart. A node that crashed after
+broadcasting a prevote and restarted without it would sign a second, different
+vote in the same slot: not Byzantine, but indistinguishable from it, blacklisted
+by its peers on evidence that is entirely genuine, and a counterexample to the
+hypothesis the proof uses. So a vote is appended to a write-ahead log and
+\texttt{fsync}ed \emph{before} it is broadcast, and on restart a slot already in
+the log re-sends exactly the vote it recorded. A crash between recording and
+sending loses the broadcast, which is harmless --- peers time out and the
+sub-round proceeds --- rather than losing the record, which is not. Simulations
+never restart and use an in-memory log that says so; a deployment passes a path.
+
+\paragraph{Delay and loss are different problems.}
+The doubling window answers delay. It does not answer loss: a dropped vote costs
+the whole sub-round however long the window was, and a two-phase sub-round needs
+two quorums to land rather than one. What loss needs is more \emph{attempts},
+capped by a parameter $r_{\max}$. But the two are coupled --- the $r$-th attempt
+uses a window of $w 2^{r}$, so once that exceeds the time a node is willing to
+spend on a height, further attempts are unreachable and $r_{\max}$ stops
+mattering. Section~\ref{sec:eval-consensus} reports what we measured, which is
+less tidy than this reasoning suggests.
+
+\subsection{Accountability}
+\label{sec:accountability}
+
+A voter's slot is $(\mathrm{voter}, h, r, \mathrm{phase})$; occupying one twice
+is equivocation. Prevoting and precommitting within one sub-round is normal,
+which is why the phase belongs in the slot. A proposer's slot is
+$(\mathrm{proposer}, h)$.
+
+The two conflicting signed messages \emph{are} the evidence. A recipient
+re-verifies both signatures itself rather than trusting the accuser, so evidence
+is transferable in the sense of Polygraph~\cite{civit2021polygraph}. Detection
+happens on the signed message, before any expensive verification, so a proposer
+flooding conflicting proposals is caught rather than paid for in proof
+verifications.
+
+\paragraph{Detection is not enough.}
+An equivocating proposer's first message is accepted before its second exposes
+it, and honest nodes observe the two in different orders --- so they accept
+\emph{different} firsts. If the node that catches the equivocation locally keeps
+what it already accepted while the nodes that learn by gossip discard it, the
+proposal sets never converge. In a 10-node run this produced prevotes split 5/4
+against $q = 7$ at every sub-round, with the offender correctly blacklisted
+everywhere and not a single height committed. The fix is to retract: a proven
+equivocator's votes \emph{and} proposals are erased from every open round and
+from the future buffer. The purge is a deterministic function of self-verifying
+gossiped evidence, so every honest node performs the same one.
+
+\paragraph{What purging may and may not undo.}
+Purging retroactively changes who counts, so its interaction with
+Section~\ref{sec:safety} has to be pinned down rather than left implicit. We fix
+the semantics as follows.
+
+\begin{quote}
+\textbf{(P)} A certificate or polka is valid \emph{once formed}. Validity is a
+property of the $q$ signatures it carries and of the registered member set ---
+never of which equivocations the checking node happens to have heard about.
+Evidence governs \emph{future} tallies only: a blacklisted node's new votes are
+refused and its pending votes and proposals are erased from open rounds, but
+nothing already certified is unmade.
+\end{quote}
+
+Without \textbf{(P)} the proof does not apply, because ``a polka at $r_1$''
+would not be a well-defined object: two correct nodes holding different evidence
+would disagree about whether the same $q$ signatures constituted one, and a lock
+licensed at one node would be unlicensed at another. With \textbf{(P)} every
+predicate the proof quantifies over is a function of signed messages alone, so
+all correct nodes agree on it, and the argument goes through unchanged.
+
+\textbf{(P)} also costs nothing in safety. The whole point of $2q > n+f$ is to
+budget for all $f$ faulty nodes signing both sides of a disagreement; an
+equivocator's signature inside a quorum is precisely the case the inequality is
+sized for, and refusing such a quorum neither prevents a conflicting certificate
+nor is needed to. Our implementation originally did refuse them, which was
+view-dependence introduced for no gain, and a test now pins the corrected
+behaviour.
+
+Locks, correspondingly, are not released: a lock is licensed by a polka, a polka
+is valid once formed by \textbf{(P)}, and so the lock remains licensed no matter
+whose votes are later purged. The next polka moves it by the ordinary rule.
+
+This is accountability, not prevention: $f$ equivocators can still deny a height
+and force additional sub-rounds. What they cannot do is deny it without leaving
+a proof that they did.
+
+\subsection{Auditability and Catch-Up}
+
+Each committed height writes an entry containing the height, the parent model
+hash, the new model and its hash, the proposal identifiers, the proposals with
+their proofs, the registered roots they were checked against, the certificate,
+and the aggregation parameters. Entries are hash-chained.
+
+The same entry serves three purposes. It is the sync protocol: a node at height
+$h$ requests entry $h+1$, verifies it end to end --- certificate quorum, every
+proof against the model as of that height, recomputed aggregate, chain link ---
+and applies it. It is the bootstrap path for a new node, from genesis. And it is
+what an outside auditor re-verifies offline, sharing no state with the node that
+produced it.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Implementation}
+
+Python~3.12 with asyncio; circuits in Circom~2.1.6 compiled with
+circom~2.2.3 and snarkjs~0.7.6 over bn128; Ed25519 signatures.
+
+The consensus engine is a pure state machine: messages in, \emph{effects} out
+(\textsf{Broadcast}, \textsf{Committed}, \textsf{NeedSync}, \textsf{OpenWindow},
+\textsf{Rejected}). It performs no I/O. This is what makes the protocol testable
+without sockets or sleeps, and it is why the tests in
+Section~\ref{sec:eval-tests} are protocol tests rather than timing tests.
+
+Four details are worth recording because each was a source of real bugs.
+\emph{Canonical encoding:} all signed and hash-chained content is canonical JSON
+that \emph{rejects floats outright}, since a float's shortest representation is
+platform-dependent and a signature over a platform-dependent encoding is not a
+signature; timestamps are integer milliseconds for the same reason.
+\emph{Domain separation:} signatures cover
+\texttt{"zkfl/v2" \textbar{} kind \textbar{} canonical}, so a signature over one message type
+cannot be replayed as another. \emph{Proposal identity:} a proposal's identifier
+hashes the entire payload including height and proposer, because an identifier
+derived from the update alone collides whenever two nodes take the same step,
+and then two distinct proposals share one identity. \emph{Vote durability:} a
+node's own votes go to an \texttt{fsync}ed write-ahead log before broadcast, and
+a restart re-sends what the log holds rather than signing again --- without it a
+crash-restart is self-equivocation and Proposition~1's hypothesis is false.
+
+Four message kinds cross the wire: proposals, votes, polkas and commit
+certificates. The last three are self-verifying and terminal, so they are
+gossiped; votes are sent once by their author and not relayed, which is what
+keeps the cost quadratic rather than cubic.
+
+A persistent Node.js worker holds the proving key in memory across proofs;
+proving runs in a thread so a node that is proving continues to serve messages
+rather than appearing partitioned. The transport is either an in-process bus
+with injected one-way delay, jitter and loss, or real WebSockets; both run the
+identical node code. A message gate applies per-peer rate limits and a bounded
+future-height buffer before any verification, so flooding is paid for in
+bookkeeping rather than in pairing checks.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Evaluation}
+\label{sec:eval}
+
+All measurements on an Intel Core i5-11400H at 2.70\,GHz, Node
+v24.20.0. Each experiment writes a JSON file recording its numbers alongside the
+CPU and toolchain versions, and each is regenerable with one command.
+
+The three kinds of number in this section are not equally stable, and we
+separate them rather than presenting them as one class of measurement.
+Constraint counts, proof sizes, accuracies and tampering outcomes are
+\emph{exact}: they are the same on every run. Message counts are exact only so
+long as no collect window expires --- at $n \le 20$ every height is identical
+down to the delivery, while at $n = 50$ a height takes tens of seconds and a
+loaded host can expire a window and add a retried sub-round. Proof and
+verification timings move a few percent. The consensus figures under packet loss
+move far more than that, for reasons we quantify in
+Section~\ref{sec:eval-consensus} and do not want a reader to discover by failing
+to reproduce them.
+
+\subsection{Test Suite}
+\label{sec:eval-tests}
+
+151 automated tests, of which 15 require the compiled circuit. They cover
+fixed-point and Poseidon agreement with the circuit, in-circuit soundness,
+public-input binding, quorum arithmetic, locking and certificates, equivocation
+evidence, aggregation determinism, audit re-verification and tampering, message
+gating, and live networks with each adversary in turn. We quote the count from a
+run rather than from memory; our earlier draft reported 44 in its text and 53 in
+its table.
+
+\subsection{Circuit and Proof Cost}
+\label{sec:eval-proof}
+
+\begin{table}[t]
+\centering
+\caption{Proof cost, and an ablation against the earlier circuit. Cold includes
+Node start-up and proving-key load; warm reuses the persistent worker. The
+ablation's timings ($\dagger$) are \emph{not} comparable to this work's: that
+circuit is driven through the \texttt{snarkjs} command line, so every figure in
+its row pays a fresh Node process, which is why a 6-constraint circuit appears
+to verify more slowly than a 19{,}402-constraint one. Constraints and samples
+are the columns to read across rows.}
+\label{tab:proof}
+\begin{tabular}{lrrrrrr}
+\toprule
+\textbf{Circuit} & \textbf{Constraints} & \textbf{Samples} &
+\textbf{Prove cold} & \textbf{Prove warm} & \textbf{Verify} & \textbf{zkey} \\
+\midrule
+This work ($n{=}4,k{=}8,d{=}4$) & 19{,}402 & 8 & 1.09\,s &
+  0.84\,s & 15.1\,ms & 9.5\,MB \\
+Earlier prototype (ablation)    & 6        & 0 & 0.52\,s$^\dagger$ &
+  0.41\,s$^\dagger$ & 336.9\,ms$^\dagger$ & $<$0.1\,MB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:proof} gives the cost. Verification is 15.1\,ms against a
+persistent worker. The 742\,B proof size is \texttt{snarkjs}' JSON encoding,
+which is what our nodes actually put on the wire; the underlying Groth16 proof
+is three \textbf{bn128} group elements, 128\,B compressed, and a deployment that
+cared about bandwidth would send that instead. We quote the encoding we
+measured rather than the theoretical minimum, and the message-cost table in
+Section~\ref{sec:eval-consensus} is computed from the former.
+
+The ablation row is the more informative one, and the column to read is
+\emph{constraints}, not time. Our earlier prototype proved in
+0.41\,s --- but on a harness that spawns a process per operation, so its timings
+say more about Node than about cryptography, and we mark them accordingly rather
+than inviting a speedup claim we did not measure. What the row does establish is
+what the two circuits prove: reporting 0.41\,s as the cost of proving a training
+step compares a proof of nothing with a proof of something. Concretely, the
+\textsc{poison1} attack --- choose a target model, then back-derive the gradient
+witness that satisfies the single subtraction constraint --- is accepted by that
+circuit at a cost of one integer division per parameter and requires no training
+data at all. Against the circuit of Section~\ref{sec:circuit} it fails at the
+clipping-bound constraint; a variant that trains genuinely but on uncommitted
+data fails at the Merkle inclusion constraint. Both failures are witness
+generation errors, i.e.\ no proof exists to submit.
+
+\subsection{Learning}
+\label{sec:eval-learning}
+
+\begin{table}[t]
+\centering
+\caption{Iris (versicolor vs.\ virginica), 100 samples, 4 features, 70/30 split,
+5 nodes, 60 heights, trimmed mean, $\eta = 0.5$. Accuracy on the 30-sample test
+set. \textbf{Range} is across 3 splits (seeds 0--2); the single-split column is
+seed 0, the one the loss column is measured on.}
+\label{tab:learning}
+\begin{tabular}{lccc}
+\toprule
+\textbf{System} & \textbf{Accuracy} & \textbf{Range, 3 splits} &
+\textbf{Final loss} \\
+\midrule
+This work (integer fixed-point, PWL sigmoid, BFT) & 0.867 & 0.867--0.967 & 0.353 \\
+FedAvg, same partition, no proofs & 0.833 & 0.833--0.967 & 0.306 \\
+Centralized float64 logistic regression & 0.833 & 0.833--0.967 & 0.269 \\
+scikit-learn, same split & 0.833 & 0.833--0.967 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All 60 heights committed, all nodes bitwise identical, every invariant held.
+
+The number to take from Table~\ref{tab:learning} is not $0.867 > 0.833$. The
+test set holds 30 samples, so that gap is \emph{one sample} and is noise, and
+the two further splits say so directly: on both of them this work and FedAvg
+score \emph{identically} (0.933 and 0.967), and the spread across splits ---
+0.100 for this work, 0.133 for FedAvg --- is three to four times the gap being
+compared. We report three splits rather than one for exactly this reason. The
+claim the table supports is the weaker and more useful one: quantizing to integers,
+replacing the sigmoid with five line segments, clipping every step to
+$\delta_{\max}$, and routing every update through a BFT protocol does not
+measurably degrade learning relative to float64 on this task. The float64 loss
+is genuinely lower, which is the approximation showing up where one would expect
+it.
+
+This is a four-feature binary logistic regression on 100 samples split five
+ways. It says nothing about deep models.
+
+\subsection{Consensus Cost and Behaviour Under Adversity}
+\label{sec:eval-consensus}
+
+\begin{table}[t]
+\centering
+\caption{Message cost against $n$, decomposed. Deliveries \emph{per height},
+not broadcasts and not per run; 5 heights, 5\,ms one-way delay, no loss, $p=3$
+proposers. The last column is $(n-1)(p+4n)$.}
+\label{tab:scale}
+\begin{tabular}{rrrrrrrrr}
+\toprule
+$n$ & $q$ & \textbf{Median} & \textbf{Prop.} & \textbf{Votes} &
+\textbf{Polkas} & \textbf{Certs} & \textbf{Total} & \textbf{Closed form} \\
+\midrule
+5  & 4  & 0.26\,s  & 12  & 40   & 20   & 20   & 92    & 92 \\
+10 & 7  & 0.46\,s  & 27  & 180  & 90   & 90   & 387   & 387 \\
+20 & 14 & 2.04\,s  & 57  & 760  & 380  & 380  & 1577  & 1577 \\
+50 & 34 & 26.45\,s & 147 & 4988 & 2450 & 2450 & 10094 & 9947 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:scale} shows message cost growing quadratically, not cubically:
+deliveries per $n^2$ is flat, 3.68 to 4.04, as $n$ goes from 5 to 50. Our
+earlier design re-broadcast an $O(n)$-sized vote set with every new vote, which
+is $O(n^3)$ bytes per height.
+
+We give the decomposition rather than a single total because a single total here
+is indistinguishable from a formula, and would be right to distrust. It counts
+\emph{deliveries}, so each of the $p$ proposals reaches $n-1$ peers; every node
+sends a prevote and a precommit, gossips the polka it observed, and gossips the
+certificate. That is $(n-1)(p + 4n)$, and at $n \le 20$ the measurement lands on
+it exactly --- because at zero loss nothing is ever retried, so there is nothing
+for the count to differ by. At $n = 50$ it does not: 10{,}094 against a predicted
+9{,}947, the excess being sub-rounds that expired before a quorum arrived at a
+26\,s median height. The count also scales linearly in heights, 144, 360 and 720
+deliveries for 2, 5 and 10 heights at $n=5$, which is the check that it is
+per-height rather than per-run.
+
+The polka column is the price of the liveness fix in Section~\ref{sec:consensus}:
+$n(n-1)$ deliveries per height, a quarter of the total. It buys termination out
+of a locked/unlocked split that no number of sub-rounds resolves, and we report
+it as its own line rather than folding it into the vote total, since a reader
+comparing against a system without transferable polkas should see what it costs.
+
+\begin{table}[t]
+\centering
+\caption{Behaviour under injected delay and loss, $n=10$, 25 heights across
+three independent seeds per row. A height counts as committed only when
+\emph{every} node holds it within a 15\,s deadline, so one node still syncing
+marks the height failed; and because the driver re-attempts the same height, a
+height that takes longer than the deadline is charged to every interval it
+spans. These are the strictest readings of both words, and they matter for the
+loss rows.}
+\label{tab:adversity}
+\begin{tabular}{rrcrl}
+\toprule
+\textbf{One-way delay} & \textbf{Loss} & \textbf{Heights committed} &
+\textbf{Median} & \textbf{Per seed} \\
+\midrule
+5\,ms   & 0\%  & 75/75 & 0.35\,s  & 25/25, 25/25, 25/25 \\
+50\,ms  & 0\%  & 75/75 & 0.50\,s  & 25/25, 25/25, 25/25 \\
+150\,ms & 0\%  & 75/75 & 1.46\,s  & 25/25, 25/25, 25/25 \\
+50\,ms  & 5\%  & 49/75 & 0.60\,s  & 3/25, 25/25, 21/25 \\
+50\,ms  & 20\% & 3/75 & 15.01\,s & 1/25, 1/25, 1/25 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:adversity} is where we depart from the convention of reporting
+only the configurations that worked. Delay is handled: 150\,ms
+one-way costs latency and nothing else. Loss is a different matter, and reporting
+it honestly required more care than we first gave it. Estimated from five
+heights per configuration, the 5\%-loss figure moved between 5/5 and
+3/5 across runs --- five samples is not a rate. Re-running at 25 heights across
+three seeds gives 49/75, and the per-seed split of 3/25, 25/25, 21/25 shows the
+variance is real rather than a sampling artefact: one seed in three collapses.
+
+We initially attributed this to the sub-round budget $r_{\max}$, on the
+reasoning that loss needs retries rather than longer windows, and a 10-height
+sweep appeared to confirm it: 0.23 round-failure at $r_{\max} = 4$ against 0.00
+at 8 and 16. Re-running that sweep at 25 heights per seed does not support the
+conclusion. We measure failure rates of \textbf{0.48, 0.29 and 0.53} at
+$r_{\max} = 4$, 8 and 16 --- better at 8 than at 4, but \emph{worse at 16 than
+at either}, so the relationship is not monotone and, given the per-seed spread
+above, the differences are not separable from noise with three seeds.
+
+The non-monotonicity does have a mechanical explanation, and it is the reason we
+report the budget as coupled rather than as a tuning knob. Attempt $r$ waits
+$w 2^{r}$ (capped at $2^6 w$), so a larger budget also means later attempts are
+individually longer; past the point where one window exceeds the height's
+deadline, raising $r_{\max}$ buys unreachable sub-rounds rather than extra
+attempts. Budget and window schedule have to be designed together, and we did
+not. We therefore make \emph{no} tuning recommendation for lossy links beyond
+the observation that none of the settings we tried makes 5\% loss reliable.
+
+\paragraph{The deadline is the binding constraint, not the budget.}
+That reasoning predicts something testable, so we tested it: hold $r_{\max}$
+fixed at 8 and vary the per-height deadline instead. At 5\% loss, $n=10$ and
+50\,ms one-way, a 15\,s deadline --- which the schedule above makes 5 to 6
+attempts reachable within --- commits 22/24 heights, and a 45\,s deadline ---
+6 to 8 reachable --- commits 24/24. Moving the deadline moves the outcome
+while the budget is constant, which is the direct evidence that the budget was
+never what bound. \texttt{experiments/e3\_deadline.py} prints the cumulative
+window schedule beside the deadlines it tests, so the arithmetic above is
+reproducible rather than asserted.
+
+\paragraph{How much is any single loss figure worth?}
+Because the simulator runs on real \texttt{asyncio} timers rather than a logical
+clock, two runs with identical seeds do not see identical interleavings, and at
+5\% loss the protocol sits close enough to a tipping point that the difference
+shows. We therefore measured it rather than quoting one run: three repeats of
+the same three seeds, 15 heights each. Commit rates across repeats were
+0.82--1.00 (pooled 127/135), against 0.47--1.00 \emph{across seeds within} a
+repeat. Seed-to-seed spread dominates run-to-run spread, which is the answer we
+wanted --- the seed is doing more of the work than the scheduler --- but neither
+is small, and a single number from a single run is a sample of a mixture. We
+report pooled rates and ranges throughout this subsection for that reason, and
+\texttt{make e3-repeat} regenerates the spread. It must be run on an idle
+machine: an earlier attempt, taken while another experiment was running, gave
+0.71/0.40/0.33 in the order the other job got heavier, and most of that
+``run-to-run spread'' was the host rather than the protocol.
+
+At 20\% loss no budget helps at all, and this is a limit of the design rather
+than a parameter to tune. A lossy link needs a retransmitting transport
+underneath; this protocol does not compensate for one.
+
+\subsection{Adversarial Scenarios}
+\label{sec:eval-adversarial}
+
+Three live adversaries at $n=10$, $f=3$, $q=7$, three heights each. An
+\textbf{equivocating voter} and an \textbf{equivocating proposer} are each
+detected by all nine honest nodes, with converged blacklists, \emph{zero} false
+positives, and all three heights still committing. A \textbf{flooder} is
+rate-limited on 7{,}895 messages without stalling the network; it is not
+blacklisted, since flooding is not equivocation and there is nothing to prove
+against it.
+
+\begin{table}[t]
+\centering
+\caption{Poisoning by nodes that train correctly on committed-but-adversarial
+data, 40 heights, $n=10$, trim $=250$ per mille. Median over three data seeds,
+with the range across seeds; clean-run accuracy 0.947 (0.928--0.958).
+\textbf{Mag.} is the feature scaling the adversary committed to, chosen by
+sweeping and keeping the most damaging setting that stays inside the clipping
+bound --- so no poisoned step is ever discarded as unprovable. The last column
+is the trimmed mean's own robustness precondition, that at least $f$ values are
+trimmed per side; it is a property of the rule's configuration, not of the
+clipping bound, which holds in every row by construction.}
+\label{tab:poison}
+\begin{tabular}{clcccrc}
+\toprule
+\textbf{Poisoned} & \textbf{Rule} & \textbf{Mag.} & \textbf{Accuracy} &
+\textbf{Lost} & $\|\mu - \mu_{\rm clean}\|_\infty$ & \textbf{Trim $\ge f$} \\
+\midrule
+\multirow{3}{*}{2 of 10}
+ & FedAvg       & 1.0  & 0.842 (0.761--0.914) & $-0.117$ & 857{,}677 & --- \\
+ & Trimmed mean & 0.5  & 0.931 (0.928--0.933) & $-0.017$ & 342{,}623 & yes \\
+ & Median       & 0.25 & 0.933 (0.925--0.936) & $-0.014$ & 316{,}982 & yes \\
+\midrule
+\multirow{3}{*}{3 of 10}
+ & FedAvg       & 1.0  & 0.831 (0.700--0.892) & $-0.128$ & 1{,}001{,}866 & --- \\
+ & Trimmed mean & 1.0  & 0.844 (0.739--0.881) & $-0.114$ & 791{,}064 & \textbf{no} \\
+ & Median       & 0.25 & 0.906 (0.903--0.914) & $-0.033$ & 568{,}312 & yes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:poison} reports the attack the circuit cannot stop. Each poisoned
+node commits to a dataset of large-magnitude features with the labels a correct
+model would not assign, registers its Merkle root, and then trains \emph{honestly}
+on it. Every resulting proposal carries a valid proof, because it is a correct
+gradient step on committed data. Only the aggregation rule can help.
+
+\paragraph{The adversary is calibrated, not merely loud.}
+An earlier version of this experiment let the poisoned nodes propose whatever
+their data produced and discarded the steps that exceeded $\delta_{\max}$ as
+unprovable, counting them. That is honest but it is not the strongest attack:
+a real adversary does not throw away its own rounds. It commits, once and in
+advance, to the dataset whose steps do the most damage \emph{while remaining
+provable}. We model that by sweeping the feature scaling and keeping, for each
+rule, the most damaging setting that never trips the bound --- the \textbf{Mag.}
+column. No poisoned step is discarded in any row of Table~\ref{tab:poison}.
+
+The calibration is not a formality. Against FedAvg the adversary picks the
+largest scaling it can, because a mean has no defence against magnitude. Against
+trimmed mean and median it deliberately picks a \emph{smaller} one (0.5 and
+0.25): an extremal contribution is exactly what an order statistic discards, so
+the better attack is the one that stays inside the kept range and pulls it. This
+roughly triples the damage the earlier attack did to trimmed mean at 2 poisoned
+nodes, from 0.6\% to 1.7\%.
+
+\medskip
+Two results survive that strengthening. First, at 2 poisoned nodes the trimming
+threshold covers the adversaries and trimmed mean holds: FedAvg loses 11.7\%
+accuracy where trimmed mean loses 1.7\%. Second, at 3 poisoned nodes,
+$\lfloor 10 \cdot 250/1000 \rfloor = 2$ values are trimmed per side while
+$f = 3$, so the robustness precondition is violated --- and trimmed mean loses
+11.4\%, essentially matching plain FedAvg. It fails exactly where its own bound
+says it will. Our implementation emits a runtime warning on that configuration
+and no other, and the measurement confirms the warning is load-bearing rather
+than decorative. Median, which has no trimming threshold, degrades gracefully in
+both.
+
+The seed ranges deserve reading alongside the medians. FedAvg's accuracy varies
+from 0.761 to 0.914 across three seeds at 2 poisoned nodes, which is wider than
+the gap it is being compared against; the robust rules vary by under a point.
+That the \emph{unprotected} rule is also the least predictable one is
+unsurprising, but it means the FedAvg rows should be read as ``much worse, with
+high variance'' rather than as a specific number.
+
+\subsection{Offline Auditability}
+\label{sec:eval-audit}
+
+We ran 7 nodes for 3 heights in strict mode, published node 0's audit log as
+plain JSON (41.6\,kB, 13.9\,kB per height), and
+re-verified it from a cold start with a fresh proof backend sharing no state
+with the run: all certificates re-checked against the member set, all proofs
+re-checked against the model as of their height and the proposer's registered
+root, all aggregates recomputed, all chain links recomputed. Verification took
+0.37\,s, or 0.12\,s per height.
+
+\begin{table}[t]
+\centering
+\caption{Tampering with the published log. Nine attacks, nine rejections.}
+\label{tab:tamper}
+\begin{tabular}{ll}
+\toprule
+\textbf{Tampering} & \textbf{Rejected because} \\
+\midrule
+Model edited                        & model does not match its hash \\
+Model edited, hash recomputed       & recomputed aggregate does not match \\
+Certificate one vote short          & certificate lacks a quorum \\
+Certificate padded with a duplicate voter & certificate lacks a quorum \\
+Precommits relabelled as prevotes   & certificate lacks a quorum \\
+A proposal dropped from the set     & recomputed aggregate does not match \\
+Proofs swapped between proposers    & bad proposal signature \\
+Proofs swapped \emph{and re-signed} & proof does not verify \\
+A height spliced out                & broken parent link \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:tamper} gives the negative results, which are the point of the
+experiment: a checker that accepts everything checks nothing. The last two rows
+are a pair. Swapping two proposals' proofs is caught by the signature check,
+because the signature covers the proof --- which means the pairing check is never
+exercised. Re-signing the swapped proposals with the genuine proposers' keys
+makes every message well-formed and leaves proof verification as the only
+remaining defence; it rejects.
+
+The first row is one this experiment added. Writing the tampering suite is what
+found the corresponding defect: our offline verifier recomputed the aggregate
+and compared \emph{its} hash, but never checked the entry's human-readable model
+field against that hash. An edited model therefore passed a full audit, because
+the field a reader actually consumes was not the field being checked. The suite
+reported \textsc{accepted} where it expected a rejection, which is the only
+reason we found it. We record this because it is the argument for negative
+tests: every other row passed from the first run, and a suite containing only
+those rows would have certified a verifier with a hole in it.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion and Limitations}
+\label{sec:limitations}
+
+\paragraph{The proof does not make the update private.}
+This is the most important limitation and it is structural. The zk-SNARK hides
+the training data. It does not hide $\mathbf{w}_{\rm new}$, which is public by
+construction: every node needs it to aggregate. Gradient-inversion
+attacks~\cite{zhu2019deepleakage,geiping2020inverting} reconstruct training
+samples from exactly this quantity. \emph{Publishing a per-node update weakens
+privacy regardless of the proof.} Composing this design with differential
+privacy or secure aggregation is future work; claiming privacy without it would
+be wrong.
+
+\paragraph{Is the zero-knowledge property doing any work?}
+It is a fair challenge, and the honest answer is: less than the name suggests,
+but not nothing. We publish $\mathbf{w}_{\rm new}$, and we cite the
+gradient-inversion literature to say that publishing it leaks information about
+the batch. So the protocol's \emph{integrity} requirement is a succinct
+argument, not a zero-knowledge one, and a reader is right to ask why not use a
+transparent, setup-free system --- which would additionally delete our
+trusted-setup limitation.
+
+Two things the hiding property still buys. First, the witness is the batch
+\emph{and} its Merkle path: what stays hidden is which $k$ of the node's
+committed samples were used at this height, and thereby the rest of the
+committed dataset, which no update reveals. A verifier learns that some
+committed batch was used, not which. Second, and more prosaically, Groth16 gives
+a constant-size proof and millisecond verification, and in a gossip protocol
+every node verifies every proposal at every height --- $O(n)$ verifications per
+node per height. A transparent system with proofs in the tens of kilobytes and
+verification in the tens of milliseconds changes the message-cost table in
+Section~\ref{sec:eval-consensus} substantially, and we did not want to claim a
+consensus cost we had measured with a cheaper primitive.
+
+That is a defensible engineering choice rather than a cryptographic necessity,
+and we state it as one. A transparent proof system is the natural next step for
+a deployment that would rather lose proof size than keep a ceremony, and nothing
+in the protocol above depends on Groth16 specifically.
+
+\paragraph{The circuit cannot distinguish honest data from poisoned data.}
+It proves that the update \emph{is} the gradient step on the \emph{committed}
+data. A node that commits to a poisoned dataset and trains correctly produces a
+valid proof, as Section~\ref{sec:eval-adversarial} demonstrates. No circuit of
+this form can do otherwise; defending it requires data-level attestation.
+
+\paragraph{Nothing binds a batch to a height.}
+The circuit proves that the update is a correct step on \emph{some} batch whose
+digest is in the committed tree. It does not constrain \emph{which}. A node is
+therefore free to train on its most damaging committed batch at every height,
+and an adversary certainly would. Honest nodes in our implementation walk their
+batches round-robin, and the experiment of
+Section~\ref{sec:eval-adversarial} does the same, so the poisoning numbers
+\emph{understate} this adversary: it commits one poisoned shard and then replays
+its worst batch indefinitely.
+
+The fix is small and we describe it rather than claim it. Expose the Merkle leaf
+index as a public signal, constrain it to the path bits already in the circuit,
+and have the verifier --- which already supplies every other public input from
+its own state --- require it to equal a deterministic schedule, for instance
+$H(h \,\|\, \text{proposer}) \bmod 2^d$. That makes batch selection a function of
+the height rather than a choice, at the cost of one public input and a handful
+of constraints. We did not implement it, and the omission is a gap in coverage
+rather than in soundness: the proof still establishes exactly what it claims.
+
+\paragraph{Robustness is conditional, and the condition is checkable.}
+Coordinate-wise trimmed mean bounds adversarial influence only when at least $f$
+values are trimmed per side. With few proposals per height the trim count rounds
+down and the bound becomes vacuous. Our implementation says so at runtime rather
+than staying silent, and Table~\ref{tab:poison} measures the consequence.
+
+\paragraph{Trusted setup.}
+Per-circuit, as Groth16 requires. Sound if one phase-2 contributor is honest;
+forgeable by the operator in the offline build mode, which is labelled as such.
+
+\paragraph{Security level.}
+bn128 offers roughly 100 bits of security after the extended tower number field
+sieve~\cite{kim2016extnfs,barbulescu2019updating}, not the 128 sometimes quoted.
+
+\paragraph{Scale.}
+Four features and a batch of eight. Constraint count grows roughly linearly in
+$n \cdot k$; extrapolating from 19{,}402 constraints to a convolutional network
+is not supported by anything measured here, and the proof-of-training
+literature~\cite{garg2023zkpot,abbaszadeh2024kaizen} is the appropriate
+reference for that regime.
+
+\paragraph{Approximation.}
+The five-piece sigmoid has maximum error $0.0117$. It is adequate for logistic
+regression and would need revisiting --- most plausibly via lookup arguments --- for
+anything else.
+
+\paragraph{Availability.}
+A partition holding more than $f$ nodes stops progress. This is the price of
+safety under partial synchrony~\cite{fischer1985flp} rather than a defect, but a
+deployment must expect it. Sustained packet loss above a few percent degrades
+progress sharply (Table~\ref{tab:adversity}).
+
+\paragraph{Transport.}
+Our WebSocket transport binds node identities to addresses and drops unknown
+senders, but the channel is plain TCP. Every message carries its own signature,
+so a network adversary can delay and drop but not forge; given the privacy
+limitation above, however, a deployment should terminate TLS.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+We have presented a decentralized federated learning system in which each model
+update carries a zk-SNARK binding it to a committed dataset and to the verifier's
+own view of the global model, and in which nodes agree on the aggregate of the
+verified updates through a leaderless two-phase BFT protocol with a stated fault
+model and a proved agreement property. Misbehaviour produces transferable
+evidence; the committed history is re-verifiable offline by a stranger, and we
+show nine distinct tamperings being rejected.
+
+The recurring lesson of this work is that each of these components fails quietly
+when built approximately. A circuit that omits range checks and remainder
+constraints proves nothing while appearing to prove something. A single-phase
+consensus deadlocks on any network with real delay while passing every test on
+loopback. A two-phase one deadlocks too, on a split between locked and unlocked
+correct nodes that no number of sub-rounds resolves, unless the quorum that
+licenses a lock can itself travel. A bound that holds for the honest witness
+because a comparator chain determines it is not a constraint. Detecting an
+equivocating proposer without retracting what it already had accepted splits the
+network permanently. An offline auditor that checks a model's hash but not the
+model field accepts a forgery. Almost all of these were present in our own
+earlier design, and every one was found by an experiment or a proof obligation
+built to look for it rather than by inspection --- several of them only when we
+tried to write down why the code was correct and found that we could not.
+
+Future work: composing with differential privacy or secure aggregation to
+address the update-privacy limitation, which we regard as the most consequential
+gap; lookup-argument activations to move beyond logistic regression; adaptive
+quorum under churn; and a transport that survives the loss rates at which the
+present protocol does not.
+
+% ─────────────────────────────────────────────────────────────────────────────
+% Single bibliography.  Entries live in paper/references.bib; compile with
+% bibtex.  (The submitted draft carried two \thebibliography blocks whose
+% second contained placeholder arXiv identifiers -- that duplication is gone.)
+\bibliographystyle{splncs04}
+\bibliography{references}
+
+\end{document}

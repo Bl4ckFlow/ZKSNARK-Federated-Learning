@@ -1,0 +1,90 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.39",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "node": "v24.20.0",
+    "circom": "circom compiler 2.2.3",
+    "snarkjs": "snarkjs@0.7.6",
+    "timestamp": "2026-09-08T22:03:02Z"
+  },
+  "config": {
+    "n": 7,
+    "rounds": 3,
+    "proposers_per_round": 3,
+    "strict_zk": true,
+    "quorum": 5,
+    "f": 2
+  },
+  "heights_committed": 3,
+  "log_bytes": 41646,
+  "bytes_per_height": 13882,
+  "heights_observed": {
+    "1": 1,
+    "2": 1,
+    "3": 1
+  },
+  "forked_heights": [],
+  "all_nodes_agree_on_history": true,
+  "live_seconds": 13.58,
+  "audit_seconds": 0.349,
+  "audit_seconds_per_height": 0.1162,
+  "verified": true,
+  "detail": "ok",
+  "tampering": [
+    {
+      "tamper": "model edited",
+      "models": "a node reports a different global model than it committed",
+      "rejected": true,
+      "reason": "height 3: model does not match its hash"
+    },
+    {
+      "tamper": "model edited, hash fixed",
+      "models": "the same, by a forger who remembers to recompute the digest",
+      "rejected": true,
+      "reason": "height 3: aggregate does not match"
+    },
+    {
+      "tamper": "certificate one vote short",
+      "models": "committing without a quorum",
+      "rejected": true,
+      "reason": "height 3: certificate lacks a quorum"
+    },
+    {
+      "tamper": "certificate padded with a duplicate",
+      "models": "faking a quorum by counting one voter twice",
+      "rejected": true,
+      "reason": "height 3: certificate lacks a quorum"
+    },
+    {
+      "tamper": "precommits downgraded to prevotes",
+      "models": "passing a polka off as a decision",
+      "rejected": true,
+      "reason": "height 3: certificate lacks a quorum"
+    },
+    {
+      "tamper": "proposal dropped from the set",
+      "models": "censoring a participant after the fact",
+      "rejected": true,
+      "reason": "height 3: aggregate does not match"
+    },
+    {
+      "tamper": "proofs swapped between proposers",
+      "models": "reusing someone else's proof for your own update",
+      "rejected": true,
+      "reason": "height 3: bad proposal signature"
+    },
+    {
+      "tamper": "proofs swapped and re-signed",
+      "models": "the same, well-formed, so only the pairing check can reject it",
+      "rejected": true,
+      "reason": "height 3: proof from 915b4d94 does not verify"
+    },
+    {
+      "tamper": "a height spliced out",
+      "models": "rewriting the training history",
+      "rejected": true,
+      "reason": "height 3: broken parent link"
+    }
+  ]
+}

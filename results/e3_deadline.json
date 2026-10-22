@@ -1,0 +1,71 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.39",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "node": "v24.20.0",
+    "circom": "circom compiler 2.2.3",
+    "snarkjs": "snarkjs@0.7.6",
+    "timestamp": "2026-09-08T21:16:41Z"
+  },
+  "collect_window_s": 0.2,
+  "doubling_cap_exponent": 6,
+  "cumulative_schedule_one_phase_s": [
+    0.2,
+    0.6,
+    1.4,
+    3.0,
+    6.2,
+    12.6,
+    25.4,
+    38.2,
+    51.0
+  ],
+  "cumulative_schedule_both_phases_s": [
+    0.4,
+    1.2,
+    2.8,
+    6.0,
+    12.4,
+    25.2,
+    50.8,
+    76.4,
+    102.0
+  ],
+  "loss": 0.05,
+  "max_sub_rounds": 8,
+  "rows": [
+    {
+      "deadline_s": 15.0,
+      "attempts_reachable": [
+        5,
+        6
+      ],
+      "max_sub_rounds": 8,
+      "rounds": 24,
+      "rounds_agreed": 22,
+      "commit_rate": 0.917,
+      "per_seed_agreed": [
+        "8/8",
+        "7/8",
+        "7/8"
+      ]
+    },
+    {
+      "deadline_s": 45.0,
+      "attempts_reachable": [
+        6,
+        8
+      ],
+      "max_sub_rounds": 8,
+      "rounds": 24,
+      "rounds_agreed": 24,
+      "commit_rate": 1.0,
+      "per_seed_agreed": [
+        "8/8",
+        "8/8",
+        "8/8"
+      ]
+    }
+  ]
+}
